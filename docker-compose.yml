@@ -1,0 +1,15 @@
+version: '3.8'
+services:
+  meilisearch:
+    image: getmeili/meilisearch:latest
+    environment:
+      - MEILI_ENV=production
+      - MEILI_MASTER_KEY=YOUR_SECURE_MASTER_KEY
+      - MEILI_MAX_INDEXING_MEMORY=2Gb
+    ports:
+      - "7700:7700"
+    volumes:
+      # Mount persistent volume so data is not wiped on restart
+      - meili_data:/meili_data
+volumes:
+  meili_data:
