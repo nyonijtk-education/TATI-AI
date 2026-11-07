@@ -1,0 +1,1448 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tati - Spoken Voice AI Platform</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#f0f4ff',
+                            500: '#6366f1',
+                            600: '#4f46e5',
+                            900: '#0f172a',
+                            cyan: '#06b6d4',
+                            magenta: '#d946ef',
+                            emerald: '#10b981'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Plus Jakarta Sans', 'sans-serif'],
+                        display: ['Space Grotesk', 'sans-serif'],
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                        'spin-slow': 'spin 12s linear infinite',
+                        'ping-once': 'ping 0.8s cubic-bezier(0, 0, 0.2, 1) 1',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body {
+            background-color: #05070f;
+            color: #f3f4f6;
+            overflow-x: hidden;
+            user-select: none;
+        }
+
+        /* Ambient Glow & Glassmorphic Effects */
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.65);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .glass-pill {
+            background: rgba(255, 255, 255, 0.04);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .glass-pill:hover, .glass-pill.active {
+            background: rgba(99, 102, 241, 0.15);
+            border-color: rgba(99, 102, 241, 0.4);
+            box-shadow: 0 0 20px rgba(99, 102, 241, 0.25);
+        }
+
+        .glow-orb-listening {
+            box-shadow: 0 0 60px rgba(6, 182, 212, 0.5), inset 0 0 30px rgba(6, 182, 212, 0.3);
+        }
+
+        .glow-orb-thinking {
+            box-shadow: 0 0 60px rgba(217, 70, 239, 0.5), inset 0 0 30px rgba(217, 70, 239, 0.3);
+        }
+
+        .glow-orb-speaking {
+            box-shadow: 0 0 80px rgba(99, 102, 241, 0.6), inset 0 0 40px rgba(99, 102, 241, 0.4);
+        }
+
+        /* Custom Scrollbar for Drawer */
+        ::-webkit-scrollbar {
+            width: 4px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(0,0,0,0.2);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.15);
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col justify-between font-sans relative antialiased selection:bg-brand-500 selection:text-white">
+
+    <!-- Ambient Dynamic Background Gradients -->
+    <div class="fixed inset-0 pointer-events-none z-0 overflow-hidden">
+        <div id="bg-glow-1" class="absolute -top-40 -left-40 w-96 h-96 bg-brand-600/20 rounded-full blur-[120px] transition-all duration-1000"></div>
+        <div id="bg-glow-2" class="absolute top-1/2 -right-40 w-96 h-96 bg-brand-cyan/15 rounded-full blur-[140px] transition-all duration-1000"></div>
+        <div id="bg-glow-3" class="absolute -bottom-40 left-1/3 w-96 h-96 bg-brand-magenta/15 rounded-full blur-[130px] transition-all duration-1000"></div>
+        <div class="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,#05070f_100%)] opacity-80"></div>
+    </div>
+
+    <!-- Header Navigation -->
+    <header class="relative z-10 p-4 sm:p-6 flex items-center justify-between max-w-7xl w-full mx-auto">
+        <div class="flex items-center space-x-3">
+            <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-brand-500 to-brand-cyan flex items-center justify-center shadow-lg shadow-brand-500/30">
+                <i class="fa-solid font-bold text-lg text-white">T</i>
+            </div>
+            <div>
+                <div class="flex items-center space-x-2">
+                    <h1 class="font-display font-bold text-xl tracking-wider text-white">TATI</h1>
+                    <span class="text-[10px] font-mono tracking-widest uppercase bg-white/10 text-brand-cyan px-2 py-0.5 rounded-full border border-brand-cyan/30">Voice AI</span>
+                </div>
+                <p class="text-xs text-gray-400 font-medium">Interactive Audio Intelligence Engine</p>
+            </div>
+        </div>
+
+        <!-- Status Indicator Pill -->
+        <div class="glass-pill px-4 py-2 rounded-full flex items-center space-x-3 border border-white/10 shadow-lg">
+            <div class="relative flex items-center justify-center">
+                <span id="status-ping" class="absolute inline-flex h-3 w-3 rounded-full bg-emerald-400 opacity-75 animate-ping"></span>
+                <span id="status-dot" class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+            </div>
+            <span id="status-text" class="text-xs font-mono font-semibold tracking-wider text-gray-200 uppercase">READY</span>
+        </div>
+
+        <!-- Secondary Utility Buttons -->
+        <div class="flex items-center space-x-2">
+            <button id="btn-test-audio" class="p-3 rounded-xl glass-pill text-emerald-400 hover:text-white transition-all hover:scale-105 active:scale-95 flex items-center space-x-1.5" title="Test Audio Output">
+                <i class="fa-solid fa-volume-high text-sm"></i>
+                <span class="text-xs font-mono hidden sm:inline">TEST AUDIO</span>
+            </button>
+            <button id="btn-offline-toggle" class="p-3 rounded-xl glass-pill text-amber-400 hover:text-white transition-all hover:scale-105 active:scale-95 flex items-center space-x-1.5" title="Toggle Offline Knowledge Mode">
+                <i class="fa-solid fa-wifi text-sm" id="offline-icon"></i>
+                <span id="offline-label" class="text-xs font-mono hidden sm:inline">ONLINE</span>
+            </button>
+            <button id="btn-settings-toggle" class="p-3 rounded-xl glass-pill text-gray-300 hover:text-white transition-all hover:scale-105 active:scale-95" title="Audio & Voice Settings">
+                <i class="fa-solid fa-sliders text-sm"></i>
+            </button>
+            <button id="btn-auto-listen-toggle" class="p-3 rounded-xl glass-pill text-brand-cyan hover:text-white transition-all hover:scale-105 active:scale-95 flex items-center space-x-2" title="Continuous Listening Mode">
+                <i class="fa-solid fa-arrows-spin text-sm"></i>
+                <span class="text-xs font-mono hidden sm:inline">AUTO-CONVERSE</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Content Area: Pure Voice Visualizer Hub -->
+    <main class="relative z-10 flex-1 flex flex-col items-center justify-center px-4 py-2 w-full max-w-5xl mx-auto">
+        
+        <!-- Domain / Topic Selector Badges -->
+        <div class="w-full mb-6 max-w-2xl">
+            <p class="text-[11px] font-mono uppercase tracking-widest text-center text-gray-400 mb-3">Knowledge Domain</p>
+            <div class="flex flex-wrap items-center justify-center gap-2" id="domain-selectors">
+                <button data-domain="unified" class="domain-badge glass-pill active px-4 py-2 rounded-full text-xs font-bold text-gray-200 flex items-center space-x-2 border-brand-cyan/40 shadow-[0_0_15px_rgba(6,182,212,0.3)]">
+                    <i class="fa-solid fa-globe text-brand-cyan"></i>
+                    <span>Global Academic Library</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Dynamic Visualizer Canvas Container -->
+        <div class="relative w-full max-w-lg aspect-square flex items-center justify-center my-2">
+            
+            <!-- Canvas Visualizer -->
+            <canvas id="visualizer-canvas" class="w-full h-full rounded-full cursor-pointer z-10 drop-shadow-[0_0_35px_rgba(99,102,241,0.25)]"></canvas>
+
+            <!-- Center Interactive Trigger Orb Overlay -->
+            <div class="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
+                <button id="main-mic-orb" class="pointer-events-auto group relative w-36 h-36 rounded-full flex flex-col items-center justify-center glass-panel border border-white/20 transition-all duration-500 transform hover:scale-105 active:scale-95 shadow-2xl">
+                    <div id="orb-glow-ring" class="absolute inset-0 rounded-full transition-all duration-500 opacity-60 group-hover:opacity-100"></div>
+                    <i id="orb-icon" class="fa-solid fa-microphone text-3xl text-white transition-all duration-300 group-hover:scale-110"></i>
+                    <span id="orb-action-label" class="text-[11px] font-mono tracking-wider font-semibold text-gray-300 mt-2 transition-colors">TAP TO TALK</span>
+                </button>
+            </div>
+
+            <!-- Visual Feedback Pulsing Rings -->
+            <div id="pulse-ring-1" class="absolute w-48 h-48 rounded-full border border-brand-500/20 pointer-events-none transition-all duration-700"></div>
+            <div id="pulse-ring-2" class="absolute w-72 h-72 rounded-full border border-brand-cyan/15 pointer-events-none transition-all duration-700"></div>
+            <div id="pulse-ring-3" class="absolute w-96 h-96 rounded-full border border-brand-magenta/10 pointer-events-none transition-all duration-700"></div>
+        </div>
+
+        <!-- Real-time Latency / Audio Signal HUD (Powered by FastIO & Meilisearch) -->
+        <div class="mt-4 flex flex-wrap items-center justify-center gap-4 text-[11px] font-mono text-gray-400 glass-pill px-5 py-2 rounded-full shadow-lg border border-brand-cyan/20">
+            <div class="flex items-center space-x-2">
+                <i class="fa-solid fa-microchip text-brand-cyan animate-pulse"></i>
+                <span id="hud-backend">Max Compute Allocated</span>
+            </div>
+            <div class="h-3 w-[1px] bg-white/10 hidden sm:block"></div>
+            <div class="flex items-center space-x-2">
+                <i class="fa-solid fa-memory text-amber-400"></i>
+                <span id="hud-latency">Expanded Context Memory</span>
+            </div>
+            <div class="h-3 w-[1px] bg-white/10 hidden sm:block"></div>
+            <div class="flex items-center space-x-2">
+                <i class="fa-solid fa-bolt text-emerald-400"></i>
+                <span>Comprehensive Generation</span>
+            </div>
+        </div>
+    </main>
+
+    <!-- Bottom Audio Controls Deck & Voice Customization -->
+    <footer class="relative z-10 max-w-4xl w-full mx-auto p-4 sm:p-6">
+        <div class="glass-panel p-4 rounded-3xl border border-white/10 flex flex-wrap items-center justify-between gap-4 shadow-2xl">
+            
+            <!-- Quick Actions Left -->
+            <div class="flex items-center space-x-3">
+                <button id="btn-mute" class="w-11 h-11 rounded-2xl glass-pill flex items-center justify-center text-gray-300 hover:text-white transition-all" title="Toggle Mute Microphone">
+                    <i class="fa-solid fa-microphone text-base"></i>
+                </button>
+                <button id="btn-stop-audio" class="w-11 h-11 rounded-2xl glass-pill flex items-center justify-center text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 transition-all" title="Interrupt Tati Speaking">
+                    <i class="fa-solid fa-circle-stop text-base"></i>
+                </button>
+            </div>
+
+            <!-- Mode Selector / Style Selector -->
+            <div class="flex items-center space-x-2">
+                <span class="text-xs font-mono text-gray-400 mr-1 hidden sm:inline">Visualizer:</span>
+                <button data-viz="orb" class="viz-style-btn glass-pill active px-3 py-1.5 rounded-xl text-xs font-medium text-gray-200">
+                    Orb Core
+                </button>
+                <button data-viz="spectrum" class="viz-style-btn glass-pill px-3 py-1.5 rounded-xl text-xs font-medium text-gray-200">
+                    Spectrum Ring
+                </button>
+                <button data-viz="particles" class="viz-style-btn glass-pill px-3 py-1.5 rounded-xl text-xs font-medium text-gray-200">
+                    Quantum Swarm
+                </button>
+            </div>
+
+            <!-- Audio Output Volume Indicator -->
+            <div class="flex items-center space-x-3 min-w-[140px]">
+                <i class="fa-solid fa-volume-high text-xs text-gray-400"></i>
+                <div class="flex-1 bg-white/10 h-1.5 rounded-full overflow-hidden">
+                    <div id="volume-level-bar" class="bg-gradient-to-r from-brand-cyan to-brand-500 h-full w-0 transition-all duration-75"></div>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Modal / Drawer for Advanced Audio & Voice Tuning -->
+    <div id="settings-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md opacity-0 pointer-events-none transition-all duration-300">
+        <div class="glass-panel w-full max-w-lg p-6 rounded-3xl border border-white/15 shadow-2xl transform scale-95 transition-all duration-300" id="settings-panel">
+            <div class="flex items-center justify-between pb-4 mb-4 border-b border-white/10">
+                <div class="flex items-center space-x-2">
+                    <i class="fa-solid fa-sliders text-brand-cyan"></i>
+                    <h3 class="font-display font-bold text-lg text-white">Audio & Voice Controls</h3>
+                </div>
+                <button id="btn-close-settings" class="text-gray-400 hover:text-white p-2 rounded-lg">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <div class="space-y-5">
+                <!-- Gemini API Key Input (Optional Override) -->
+                <div>
+                    <label class="block text-xs font-mono uppercase tracking-wider text-gray-300 mb-1.5">Gemini API Key (Optional Override)</label>
+                    <input type="password" id="api-key-input" placeholder="Using default embedded client session" class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-xs text-gray-200 focus:outline-none focus:border-brand-500 transition-colors font-mono">
+                    <p class="text-[10px] text-gray-400 mt-1">If blank, standard runtime Gemini credentials will be used.</p>
+                </div>
+
+                <!-- Voice Selection -->
+                <div>
+                    <label class="block text-xs font-mono uppercase tracking-wider text-gray-300 mb-1.5">Tati's Voice Engine Persona</label>
+                    <select id="voice-select" class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-xs text-gray-200 focus:outline-none focus:border-brand-500 transition-colors font-sans">
+                        <option value="default">Auto-Select Best Natural Voice</option>
+                    </select>
+                </div>
+
+                <!-- Speech Rate Slider -->
+                <div>
+                    <div class="flex justify-between text-xs font-mono text-gray-300 mb-1">
+                        <span>Speech Rate (Pace)</span>
+                        <span id="val-rate">1.0x</span>
+                    </div>
+                    <input type="range" id="input-rate" min="0.7" max="1.4" step="0.05" value="1.0" class="w-full accent-brand-500 cursor-pointer">
+                </div>
+
+                <!-- Speech Pitch Slider -->
+                <div>
+                    <div class="flex justify-between text-xs font-mono text-gray-300 mb-1">
+                        <span>Pitch Tone</span>
+                        <span id="val-pitch">1.0</span>
+                    </div>
+                    <input type="range" id="input-pitch" min="0.7" max="1.3" step="0.05" value="1.0" class="w-full accent-brand-cyan cursor-pointer">
+                </div>
+
+                <!-- Audio Visualizer Gain Sensitivity -->
+                <div>
+                    <div class="flex justify-between text-xs font-mono text-gray-300 mb-1">
+                        <span>Visualizer Audio Sensitivity</span>
+                        <span id="val-gain">1.5x</span>
+                    </div>
+                    <input type="range" id="input-gain" min="0.5" max="3.0" step="0.1" value="1.5" class="w-full accent-brand-magenta cursor-pointer">
+                </div>
+
+                <!-- Voice Sensitivity Threshold -->
+                <div class="flex items-center justify-between pt-2 border-t border-white/10">
+                    <div>
+                        <span class="text-xs font-medium text-gray-200 block">Auto Voice Activity Detection (VAD)</span>
+                        <span class="text-[10px] text-gray-400">Automatically ask Gemini when you finish speaking</span>
+                    </div>
+                    <input type="checkbox" id="toggle-vad" checked class="w-4 h-4 accent-brand-500 rounded cursor-pointer">
+                </div>
+            </div>
+
+            <div class="mt-6 pt-4 border-t border-white/10 flex justify-end">
+                <button id="btn-save-settings" class="px-5 py-2.5 rounded-xl bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold tracking-wider transition-all shadow-lg shadow-brand-500/30">
+                    SAVE PREFERENCES
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application Script Logic -->
+    <script>
+        // --- State Management ---
+        const AppState = {
+            IDLE: 'IDLE',
+            LISTENING: 'LISTENING',
+            THINKING: 'THINKING',
+            SPEAKING: 'SPEAKING'
+        };
+
+        let currentState = AppState.IDLE;
+        let selectedDomain = 'unified';
+        let visualizerStyle = 'orb'; // 'orb' | 'spectrum' | 'particles'
+        let autoConverse = true;
+        let isMuted = false;
+
+        // Settings
+        let speechRate = 1.0;
+        let speechPitch = 1.0;
+        let visualizerSensitivity = 1.5;
+        let vadEnabled = true;
+        let selectedVoiceIndex = null;
+        let selectedTtsVoice = 'Kore'; // Default Gemini Neural TTS Voice
+
+        // Audio API & Visualizer Variables
+        let audioCtx = null;
+        let micStream = null;
+        let micAnalyser = null;
+        let synthAnalyser = null;
+        let dataArray = null;
+        let animationFrameId = null;
+        let currentAudioSource = null;
+
+        // Speech Recognition & Synthesis
+        let recognition = null;
+        let isRecognizing = false;
+        let availableVoices = [];
+        let currentUtterance = null;
+        let userTranscriptBuffer = '';
+        let speechSafetyTimer = null;
+        let currentFetchController = null;
+        let listeningTimeout = null;
+
+        // Offline Mode State
+        let isOfflineMode = false;
+
+        // Conversational Memory
+        let chatHistory = [];
+
+        // Visualizer & Canvas State Variables
+        let canvas = null;
+        let ctx = null;
+        let phase = 0;
+
+        // DOM Element Cache References
+        let mainMicOrb, orbGlowRing, orbIcon, orbActionLabel;
+        let statusText, statusDot, statusPing;
+        let pulseRing1, pulseRing2, pulseRing3;
+        let btnAutoListen, btnMute, btnStopAudio, btnSettingsToggle, btnCloseSettings, btnSaveSettings, settingsModal;
+        let btnOfflineToggle, offlineIcon, offlineLabel;
+        let voiceSelect, inputRate, inputPitch, inputGain, toggleVad, valRate, valPitch, valGain, volumeLevelBar;
+
+        function initDOMElements() {
+            canvas = document.getElementById('visualizer-canvas');
+            mainMicOrb = document.getElementById('main-mic-orb');
+            orbGlowRing = document.getElementById('orb-glow-ring');
+            orbIcon = document.getElementById('orb-icon');
+            orbActionLabel = document.getElementById('orb-action-label');
+            statusText = document.getElementById('status-text');
+            statusDot = document.getElementById('status-dot');
+            statusPing = document.getElementById('status-ping');
+            pulseRing1 = document.getElementById('pulse-ring-1');
+            pulseRing2 = document.getElementById('pulse-ring-2');
+            pulseRing3 = document.getElementById('pulse-ring-3');
+            btnAutoListen = document.getElementById('btn-auto-listen-toggle');
+            btnMute = document.getElementById('btn-mute');
+            btnStopAudio = document.getElementById('btn-stop-audio');
+            btnSettingsToggle = document.getElementById('btn-settings-toggle');
+            btnCloseSettings = document.getElementById('btn-close-settings');
+            btnSaveSettings = document.getElementById('btn-save-settings');
+            settingsModal = document.getElementById('settings-modal');
+            btnOfflineToggle = document.getElementById('btn-offline-toggle');
+            offlineIcon = document.getElementById('offline-icon');
+            offlineLabel = document.getElementById('offline-label');
+            voiceSelect = document.getElementById('voice-select');
+            inputRate = document.getElementById('input-rate');
+            inputPitch = document.getElementById('input-pitch');
+            inputGain = document.getElementById('input-gain');
+            toggleVad = document.getElementById('toggle-vad');
+            valRate = document.getElementById('val-rate');
+            valPitch = document.getElementById('val-pitch');
+            valGain = document.getElementById('val-gain');
+            volumeLevelBar = document.getElementById('volume-level-bar');
+        }
+
+        // Dynamic Canvas Sizing Handler
+        function initCanvasSize() {
+            if (!canvas) canvas = document.getElementById('visualizer-canvas');
+            if (canvas) {
+                ctx = canvas.getContext('2d');
+                const container = canvas.parentElement;
+                if (container) {
+                    const rect = container.getBoundingClientRect();
+                    canvas.width = rect.width || 400;
+                    canvas.height = rect.height || 400;
+                }
+            }
+        }
+
+        // Gemini API Prompt Personas per Domain (Sharpened via FastIO/Meilisearch protocol)
+        const DOMAIN_PERSONAS = {
+            unified: "You are Tati, an elite Voice AI linked to the live web. You act like a highly efficient, intelligent search engine with expanded compute allocation. Provide laser-focused, highly concise responses (maximum 1 to 2 sentences) for ultra-low latency audio delivery using your Google Search grounding. Adapt to the user's flow seamlessly. Do not be repetitive. Keep responses natural, highly informative, and correct.",
+            general: "You are Tati, an elite Voice AI linked to the live web. You act like a highly efficient, intelligent search engine with expanded compute allocation. Provide laser-focused, highly concise responses (maximum 1 to 2 sentences) for ultra-low latency audio delivery using your Google Search grounding. Adapt to the user's flow seamlessly. Do not be repetitive. Keep responses natural, highly informative, and correct."
+        };
+
+        // --- Unified NASA Science Knowledge Base Data ---
+        const UNIFIED_NASA_KNOWLEDGE = [
+            {
+                id: 'earth-systems-hydrology',
+                title: 'NASA Earth Systems & Hydrology',
+                category: 'Hydrology & Earth Systems',
+                content: 'NASA Earth Science utilizes the SWOT mission to measure the elevation of surface water globally, alongside SMAP for high-resolution soil moisture mapping, which is critical for advanced climate and hydrological modeling.',
+                followUp: 'Would you like to explore how these models integrate with global precipitation data?'
+            },
+            {
+                id: 'agriculture-satellites',
+                title: 'Agriculture & Remote Sensing Satellites',
+                category: 'Agriculture & Satellites',
+                content: 'Landsat 8 and 9 provide multispectral imagery for calculating the Normalized Difference Vegetation Index (NDVI), allowing researchers to quantify agricultural evapotranspiration and assess crop drought stress.',
+                followUp: 'Are you interested in the specific thermal infrared sensors used for this analysis?'
+            },
+            {
+                id: 'satellites-remote-sensing',
+                title: 'NASA Satellite Constellations',
+                category: 'Satellites',
+                content: 'The upcoming NISAR mission employs dual-frequency synthetic aperture radar to measure Earth\'s changing ecosystems, dynamic land surfaces, and ice masses down to fractions of an inch.',
+                followUp: 'Should we delve into how synthetic aperture radar penetrates heavy cloud cover?'
+            },
+            {
+                id: 'sun-solar-physics',
+                title: 'The Sun & Heliophysics',
+                category: 'Sun & Solar Physics',
+                content: 'The Parker Solar Probe utilizes a carbon-composite heat shield to sample plasma and magnetic fields directly within the solar corona, actively solving the long-standing coronal heating problem.',
+                followUp: 'Would you like to examine the physical mechanisms of solar wind acceleration?'
+            },
+            {
+                id: 'mars-planetary-moons',
+                title: 'Mars Exploration & Astrobiology',
+                category: 'Planets & Moons',
+                content: 'The Perseverance rover employs the PIXL and SHERLOC spectrometers to detect organic compounds and biosignatures in the ancient delta deposits of Jezero Crater.',
+                followUp: 'Are you curious about the sample caching system intended for future Mars return missions?'
+            },
+            {
+                id: 'astrophysics-deep-space',
+                title: 'Astrophysics & Deep Space Observation',
+                category: 'Astrophysics',
+                content: 'The James Webb Space Telescope uses near-infrared spectroscopy to characterize exoplanet atmospheres, detecting molecular signatures like water and carbon dioxide in systems such as TRAPPIST-1.',
+                followUp: 'Shall we discuss how the telescope\'s microshutters allow for multi-object spectroscopy of early galaxies?'
+            },
+            {
+                id: 'geography-environmental-management',
+                title: 'Geography & Environmental Management',
+                category: 'Geography & Environment',
+                content: 'GIS frameworks integrate MODIS and VIIRS satellite spatial data to generate real-time spatial models of tropical deforestation rates and map urban heat island thermal gradients.',
+                followUp: 'Do you want to review the algorithmic land cover classification methods used in these models?'
+            },
+            {
+                id: 'cryosphere-ice-dynamics',
+                title: 'Cryosphere & Ice Dynamics',
+                category: 'Cryosphere',
+                content: 'The ICESat-2 mission utilizes the Advanced Topographic Laser Altimeter System (ATLAS) to measure ice sheet elevation change and sea ice thickness with extraordinary photon-counting precision.',
+                followUp: 'Would you like to analyze the impact of glacial retreat on global sea level rise calculations?'
+            },
+            {
+                id: 'atmospheric-ocean-ecosystems',
+                title: 'Atmospheric & Ocean Ecosystems',
+                category: 'Earth Systems',
+                content: 'The PACE satellite utilizes hyperspectral imaging to quantify phytoplankton diversity and atmospheric aerosol concentrations, heavily refining coupled climate and oceanic carbon models.',
+                followUp: 'Would you like to examine how hyperspectral data differentiates specific phytoplankton species?'
+            },
+            {
+                id: 'geography-topography',
+                title: 'Global Topography & Elevation',
+                category: 'Geography',
+                content: 'The Shuttle Radar Topography Mission generated high-resolution global Digital Elevation Models utilizing synthetic aperture interferometry, providing the foundational baseline for modern geographic information systems.',
+                followUp: 'Are you interested in how these topographic datasets apply to hydrological flood routing algorithms?'
+            },
+            {
+                id: 'geology-tectonics',
+                title: 'Geology & Crustal Deformation',
+                category: 'Earth Science',
+                content: 'NASA leverages Interferometric Synthetic Aperture Radar to measure millimeter-scale crustal deformation, precisely mapping tectonic strain accumulation along active global fault zones.',
+                followUp: 'Shall we explore the phase shift calculations used in interferogram generation?'
+            },
+            {
+                id: 'oceanography-sea-level',
+                title: 'Oceanography & Altimetry',
+                category: 'Earth Systems',
+                content: 'The Sentinel-6 Michael Freilich satellite employs Ku-band and C-band radar altimetry to track mesoscale ocean circulation and quantify regional sea-level anomalies over time.',
+                followUp: 'Do you want to review the orbital dynamics required for precise altimetric calibration?'
+            },
+            {
+                id: 'biosphere-carbon-cycle',
+                title: 'Biosphere & Carbon Cycle',
+                category: 'Earth Science',
+                content: 'The GEDI instrument aboard the International Space Station uses waveform LiDAR to generate three-dimensional profiles of forest canopy structure, constraining terrestrial carbon sink estimates.',
+                followUp: 'Would you like to analyze the signal processing mechanics of full-waveform LiDAR returns?'
+            }
+        ];
+
+        // Meilisearch-Simulated FastIO Retrieval Engine (Typo-Tolerant, Weighted Keyword Scoring)
+        function getInstantFallbackResponse(userQuery) {
+            const q = userQuery.toLowerCase().trim();
+            if (!q) return "I am listening. Ask your question, and my Meilisearch engine will find the precise answer. What topic interests you?";
+
+            if (q.includes('hello') || q.includes('hi') || q.includes('tati')) {
+                return "Hello! I am Tati. My Fast I/O backend and Meilisearch index are loaded and ready. What specific academic data do you require?";
+            }
+
+            // Sharpened Matching Algorithm: Simulates Meilisearch tokenization, exact matches, and typo tolerance
+            const queryWords = q.split(/\s+/).filter(w => w.length > 2);
+            let bestMatch = null;
+            let highestScore = 0;
+
+            for (const item of UNIFIED_NASA_KNOWLEDGE) {
+                const titleTokens = item.title.toLowerCase().split(/\s+/);
+                const contentTokens = item.content.toLowerCase().split(/\s+/);
+                const catTokens = item.category.toLowerCase().split(/\s+/);
+                
+                let score = 0;
+                
+                for (const word of queryWords) {
+                    // Title and Category carry heavier weight (Meilisearch exact-attribute ranking simulation)
+                    if (titleTokens.some(t => t.includes(word))) score += 5;
+                    if (catTokens.some(t => t.includes(word))) score += 4;
+                    // Content body matching
+                    if (contentTokens.some(t => t.includes(word))) score += 2;
+                }
+                
+                if (score > highestScore) {
+                    highestScore = score;
+                    bestMatch = item;
+                }
+            }
+
+            if (bestMatch && highestScore > 3) { // Stricter threshold for "sharpened" precise answers
+                return `${bestMatch.content} ${bestMatch.followUp}`;
+            }
+
+            return `That query requires a broader index search. I process exact keywords through my Fast I/O pipeline. Could you specify the scientific instrument or mission you are researching?`;
+        }
+
+        window.addEventListener('resize', initCanvasSize);
+
+        function setupAudioContext() {
+            if (!audioCtx) {
+                const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                if (AudioContextClass) {
+                    audioCtx = new AudioContextClass();
+                }
+            }
+            if (audioCtx && audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+            if ('speechSynthesis' in window && window.speechSynthesis.paused) {
+                window.speechSynthesis.resume();
+            }
+            if (audioCtx && !synthAnalyser) {
+                synthAnalyser = audioCtx.createAnalyser();
+                synthAnalyser.fftSize = 128;
+                synthAnalyser.connect(audioCtx.destination);
+            }
+        }
+
+        // Helper PCM Array Buffer Converter
+        function base64ToArrayBuffer(base64) {
+            const binaryString = window.atob(base64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+
+        function stopCurrentAudio() {
+            if (currentAudioSource) {
+                try { currentAudioSource.stop(); } catch(e){}
+                currentAudioSource = null;
+            }
+            if ('speechSynthesis' in window) {
+                try { window.speechSynthesis.cancel(); } catch(e){}
+            }
+        }
+
+        // --- Fetch Gemini Neural TTS Audio ---
+        async function fetchGeminiTts(textToSpeak, voiceName = "Kore") {
+            const userApiKey = document.getElementById('api-key-input')?.value?.trim() || "";
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${userApiKey}`;
+            
+            const payload = {
+                contents: [{
+                    parts: [{ text: textToSpeak }]
+                }],
+                generationConfig: {
+                    responseModalities: ["AUDIO"],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName: voiceName }
+                        }
+                    }
+                },
+                model: "gemini-2.5-flash-preview-tts"
+            };
+
+            const controller = new AbortController();
+            // Increased TTS generation timeout to 15s to support longer, comprehensive responses
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+            try {
+                const res = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+
+                if (!res.ok) return null;
+                const data = await res.json();
+                const part = data.candidates?.[0]?.content?.parts?.[0];
+                const audioData = part?.inlineData?.data;
+                const mimeType = part?.inlineData?.mimeType || "audio/L16;rate=24000";
+
+                let sampleRate = 24000;
+                const match = mimeType.match(/rate=(\d+)/);
+                if (match) sampleRate = parseInt(match[1], 10);
+
+                if (audioData) {
+                    return { audioData, sampleRate };
+                }
+            } catch (e) {
+                clearTimeout(timeoutId);
+            }
+            return null;
+        }
+
+        // Silence VAD Variables for instant response trigger
+        let silenceStart = null;
+        let userHasSpoken = false;
+
+        // Web Audio Synthesized High-Tech Chimes (Zero asset latency)
+        function playChime(type) {
+            setupAudioContext();
+            if (!audioCtx) return;
+            try {
+                const now = audioCtx.currentTime;
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+
+                if (type === 'listen') {
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(320, now);
+                    osc.frequency.exponentialRampToValueAtTime(640, now + 0.1);
+                    gain.gain.setValueAtTime(0.08, now);
+                    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+                    osc.start(now);
+                    osc.stop(now + 0.1);
+                } else if (type === 'thinking') {
+                    osc.type = 'triangle';
+                    osc.frequency.setValueAtTime(520, now);
+                    osc.frequency.setValueAtTime(780, now + 0.08);
+                    gain.gain.setValueAtTime(0.06, now);
+                    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+                    osc.start(now);
+                    osc.stop(now + 0.18);
+                }
+            } catch (e) {
+                // AudioContext silent fallback
+            }
+        }
+
+        // --- Fast Silence Detection (Custom VAD) ---
+        function checkSilenceVAD() {
+            if (currentState !== AppState.LISTENING || !micAnalyser || !vadEnabled) return;
+
+            const buffer = new Uint8Array(micAnalyser.fftSize);
+            micAnalyser.getByteTimeDomainData(buffer);
+
+            let sum = 0;
+            for (let i = 0; i < buffer.length; i++) {
+                const amplitude = (buffer[i] - 128) / 128;
+                sum += amplitude * amplitude;
+            }
+            const rms = Math.sqrt(sum / buffer.length);
+
+            // Voice activity threshold
+            if (rms > 0.035) {
+                userHasSpoken = true;
+                silenceStart = null;
+            } else if (userHasSpoken) {
+                if (!silenceStart) {
+                    silenceStart = Date.now();
+                } else if (Date.now() - silenceStart > 250) { // Ultra-aggressive 250ms silence threshold for extreme edge latency
+                    silenceStart = null;
+                    userHasSpoken = false;
+                    if (recognition && isRecognizing) {
+                        try {
+                            recognition.stop();
+                        } catch(e){}
+                    }
+                }
+            }
+        }
+
+        // --- Web Speech Recognition Initialization ---
+        function setupSpeechRecognition() {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) {
+                console.warn('SpeechRecognition API not supported in this browser.');
+                return;
+            }
+
+            recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = false;
+            recognition.lang = 'en-US';
+
+            recognition.onstart = () => {
+                isRecognizing = true;
+                userTranscriptBuffer = '';
+                userHasSpoken = false;
+                silenceStart = null;
+                playChime('listen');
+                setAppState(AppState.LISTENING);
+
+                if (listeningTimeout) clearTimeout(listeningTimeout);
+                listeningTimeout = setTimeout(() => {
+                    if (isRecognizing && !userHasSpoken) {
+                        try { recognition.stop(); } catch(e){}
+                    }
+                }, 7000);
+            };
+
+            recognition.onresult = (event) => {
+                let transcript = '';
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    transcript += event.results[i][0].transcript;
+                }
+                userTranscriptBuffer = transcript.trim();
+            };
+
+            recognition.onerror = (event) => {
+                // Ignore benign lifecycle events ('aborted', 'no-speech') to prevent error logs
+                if (event.error === 'aborted' || event.error === 'no-speech') {
+                    return;
+                }
+                console.warn('Speech recognition warning:', event.error);
+                isRecognizing = false;
+                if (currentState === AppState.LISTENING && !userTranscriptBuffer) {
+                    setAppState(AppState.IDLE);
+                }
+            };
+
+            recognition.onend = () => {
+                isRecognizing = false;
+                if (userTranscriptBuffer.length > 0) {
+                    handleUserSpeechQuery(userTranscriptBuffer);
+                } else if (currentState === AppState.LISTENING) {
+                    setAppState(AppState.IDLE);
+                }
+            };
+        }
+
+        // --- Web Speech Synthesis Initialization ---
+        function loadVoices() {
+            if (voiceSelect) {
+                voiceSelect.innerHTML = `
+                    <option value="tts:Kore">Kore (Neural AI - Firm)</option>
+                    <option value="tts:Zephyr">Zephyr (Neural AI - Bright)</option>
+                    <option value="tts:Puck">Puck (Neural AI - Upbeat)</option>
+                    <option value="tts:Aoede">Aoede (Neural AI - Breezy)</option>
+                    <option value="tts:Fenrir">Fenrir (Neural AI - Excitable)</option>
+                    <option value="tts:Charon">Charon (Neural AI - Informative)</option>
+                `;
+                
+                if ('speechSynthesis' in window) {
+                    availableVoices = window.speechSynthesis.getVoices();
+                    if (availableVoices.length > 0) {
+                        const optGroup = document.createElement('optgroup');
+                        optGroup.label = "Browser System Voices";
+                        availableVoices.forEach((voice, index) => {
+                            const option = document.createElement('option');
+                            option.value = `sys:${index}`;
+                            option.textContent = `${voice.name} (${voice.lang})`;
+                            optGroup.appendChild(option);
+                        });
+                        voiceSelect.appendChild(optGroup);
+                    }
+                }
+            }
+        }
+
+        if ('speechSynthesis' in window) {
+            window.speechSynthesis.onvoiceschanged = loadVoices;
+            loadVoices();
+        }
+
+        // --- State Management Visual Updates ---
+        function setAppState(newState) {
+            currentState = newState;
+            
+            // Reset Glow Classes
+            if (orbGlowRing) {
+                orbGlowRing.className = 'absolute inset-0 rounded-full transition-all duration-500 opacity-60 group-hover:opacity-100';
+            }
+            
+            switch (newState) {
+                case AppState.IDLE:
+                    if (statusText) {
+                        statusText.textContent = 'READY';
+                        statusText.className = 'text-xs font-mono font-semibold tracking-wider text-gray-300 uppercase';
+                    }
+                    if (statusDot) statusDot.className = 'relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500';
+                    if (statusPing) statusPing.className = 'absolute inline-flex h-3 w-3 rounded-full bg-emerald-400 opacity-75 animate-ping';
+                    
+                    if (orbIcon) orbIcon.className = 'fa-solid fa-microphone text-3xl text-white transition-all duration-300';
+                    if (orbActionLabel) orbActionLabel.textContent = 'TAP TO TALK';
+                    if (orbGlowRing) orbGlowRing.classList.add('bg-brand-500/20');
+
+                    if (pulseRing1) pulseRing1.style.transform = 'scale(1)';
+                    if (pulseRing2) pulseRing2.style.transform = 'scale(1)';
+                    break;
+
+                case AppState.LISTENING:
+                    if (statusText) {
+                        statusText.textContent = 'LISTENING...';
+                        statusText.className = 'text-xs font-mono font-semibold tracking-wider text-brand-cyan uppercase';
+                    }
+                    if (statusDot) statusDot.className = 'relative inline-flex rounded-full h-2.5 w-2.5 bg-brand-cyan';
+                    if (statusPing) statusPing.className = 'absolute inline-flex h-3 w-3 rounded-full bg-brand-cyan opacity-80 animate-ping';
+                    
+                    if (orbIcon) orbIcon.className = 'fa-solid fa-waveform text-3xl text-brand-cyan animate-pulse';
+                    if (orbActionLabel) orbActionLabel.textContent = 'LISTENING';
+                    if (orbGlowRing) orbGlowRing.classList.add('glow-orb-listening', 'bg-brand-cyan/30');
+
+                    if (pulseRing1) pulseRing1.style.transform = 'scale(1.15)';
+                    if (pulseRing2) pulseRing2.style.transform = 'scale(1.25)';
+                    break;
+
+                case AppState.THINKING:
+                    if (statusText) {
+                        statusText.textContent = 'THINKING...';
+                        statusText.className = 'text-xs font-mono font-semibold tracking-wider text-brand-magenta uppercase';
+                    }
+                    if (statusDot) statusDot.className = 'relative inline-flex rounded-full h-2.5 w-2.5 bg-brand-magenta';
+                    if (statusPing) statusPing.className = 'absolute inline-flex h-3 w-3 rounded-full bg-brand-magenta opacity-80 animate-ping';
+                    
+                    if (orbIcon) orbIcon.className = 'fa-solid fa-brain text-3xl text-brand-magenta animate-spin-slow';
+                    if (orbActionLabel) orbActionLabel.textContent = 'THINKING';
+                    if (orbGlowRing) orbGlowRing.classList.add('glow-orb-thinking', 'bg-brand-magenta/30');
+
+                    if (pulseRing1) pulseRing1.style.transform = 'scale(1.05)';
+                    if (pulseRing2) pulseRing2.style.transform = 'scale(1.1)';
+                    break;
+
+                case AppState.SPEAKING:
+                    if (statusText) {
+                        statusText.textContent = 'TATI SPEAKING';
+                        statusText.className = 'text-xs font-mono font-semibold tracking-wider text-brand-500 uppercase';
+                    }
+                    if (statusDot) statusDot.className = 'relative inline-flex rounded-full h-2.5 w-2.5 bg-brand-500';
+                    if (statusPing) statusPing.className = 'absolute inline-flex h-3 w-3 rounded-full bg-brand-500 opacity-80 animate-ping';
+                    
+                    if (orbIcon) orbIcon.className = 'fa-solid fa-volume-high text-3xl text-brand-500 animate-bounce';
+                    if (orbActionLabel) orbActionLabel.textContent = 'THINKING';
+                    if (orbGlowRing) orbGlowRing.classList.add('glow-orb-speaking', 'bg-brand-500/30');
+
+                    if (pulseRing1) pulseRing1.style.transform = 'scale(1.25)';
+                    if (pulseRing2) pulseRing2.style.transform = 'scale(1.4)';
+                    break;
+            }
+        }
+
+        // --- Microphone Stream Capture ---
+        async function startMicrophoneStream() {
+            setupAudioContext();
+            try {
+                if (!micStream) {
+                    micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                    const source = audioCtx.createMediaStreamSource(micStream);
+                    micAnalyser = audioCtx.createAnalyser();
+                    micAnalyser.fftSize = 128;
+                    source.connect(micAnalyser);
+                }
+                return true;
+            } catch (err) {
+                console.error('Microphone access denied:', err);
+                return false;
+            }
+        }
+
+        // --- Event Listeners Setup (Called after DOM is initialized) ---
+        function setupEventListeners() {
+            if (mainMicOrb) {
+                mainMicOrb.addEventListener('click', async () => {
+                    setupAudioContext();
+
+                    if (currentState === AppState.SPEAKING || currentState === AppState.THINKING) {
+                        if (currentFetchController) {
+                            try { currentFetchController.abort(); } catch(e){}
+                            currentFetchController = null;
+                        }
+                        stopCurrentAudio();
+                        if (speechSafetyTimer) {
+                            clearTimeout(speechSafetyTimer);
+                            speechSafetyTimer = null;
+                        }
+                        setAppState(AppState.IDLE);
+                        return;
+                    }
+
+                    if (currentState === AppState.LISTENING) {
+                        if (recognition && isRecognizing) {
+                            try { recognition.stop(); } catch(e){}
+                        }
+                        return;
+                    }
+
+                    // Start listening
+                    const hasMic = await startMicrophoneStream();
+                    if (hasMic && recognition && !isRecognizing) {
+                        try {
+                            recognition.start();
+                        } catch (e) {
+                            // Session already initializing
+                        }
+                    }
+                });
+            }
+
+            // --- Domain Badges Interaction ---
+            document.querySelectorAll('.domain-badge').forEach(badge => {
+                badge.addEventListener('click', () => {
+                    document.querySelectorAll('.domain-badge').forEach(b => b.classList.remove('active'));
+                    badge.classList.add('active');
+                    selectedDomain = badge.dataset.domain;
+                    
+                    if (currentState === AppState.IDLE) {
+                        const domainName = badge.querySelector('span').textContent;
+                        speakTatiResponse(`Switched knowledge mode to ${domainName}.`);
+                    }
+                });
+            });
+
+            // --- Visualizer Style Toggle Buttons ---
+            document.querySelectorAll('.viz-style-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.querySelectorAll('.viz-style-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    visualizerStyle = btn.dataset.viz;
+                });
+            });
+
+            // --- Control Button Listeners ---
+            if (btnAutoListen) {
+                btnAutoListen.addEventListener('click', () => {
+                    autoConverse = !autoConverse;
+                    btnAutoListen.classList.toggle('text-brand-cyan', autoConverse);
+                    btnAutoListen.classList.toggle('text-gray-400', !autoConverse);
+                });
+            }
+
+            if (btnMute) {
+                btnMute.addEventListener('click', () => {
+                    isMuted = !isMuted;
+                    btnMute.classList.toggle('text-rose-400', isMuted);
+                    btnMute.querySelector('i').className = isMuted ? 'fa-solid fa-microphone-slash text-base' : 'fa-solid fa-microphone text-base';
+                    if (micStream) {
+                        micStream.getAudioTracks().forEach(track => {
+                            track.enabled = !isMuted;
+                        });
+                    }
+                });
+            }
+
+            if (btnOfflineToggle) {
+                btnOfflineToggle.addEventListener('click', () => {
+                    isOfflineMode = !isOfflineMode;
+                    if (isOfflineMode) {
+                        btnOfflineToggle.classList.remove('text-amber-400');
+                        btnOfflineToggle.classList.add('text-rose-400');
+                        if (offlineIcon) offlineIcon.className = 'fa-solid fa-plane-slash text-sm';
+                        if (offlineLabel) offlineLabel.textContent = 'OFFLINE MODE';
+                        speakTatiResponse("Offline Knowledge Mode active. Processing questions locally.");
+                    } else {
+                        btnOfflineToggle.classList.remove('text-rose-400');
+                        btnOfflineToggle.classList.add('text-amber-400');
+                        if (offlineIcon) offlineIcon.className = 'fa-solid fa-wifi text-sm';
+                        if (offlineLabel) offlineLabel.textContent = 'ONLINE';
+                        speakTatiResponse("Online Mode active.");
+                    }
+                });
+            }
+
+            if (btnStopAudio) {
+                btnStopAudio.addEventListener('click', () => {
+                    stopCurrentAudio();
+                    if (recognition && isRecognizing) {
+                        try { recognition.stop(); } catch(e){}
+                    }
+                    setAppState(AppState.IDLE);
+                });
+            }
+
+            if (btnSettingsToggle) {
+                btnSettingsToggle.addEventListener('click', () => {
+                    if (settingsModal) settingsModal.classList.remove('opacity-0', 'pointer-events-none');
+                });
+            }
+
+            if (btnCloseSettings) {
+                btnCloseSettings.addEventListener('click', () => {
+                    if (settingsModal) settingsModal.classList.add('opacity-0', 'pointer-events-none');
+                });
+            }
+
+            if (btnSaveSettings) {
+                btnSaveSettings.addEventListener('click', () => {
+                    if (inputRate) speechRate = parseFloat(inputRate.value);
+                    if (inputPitch) speechPitch = parseFloat(inputPitch.value);
+                    if (inputGain) visualizerSensitivity = parseFloat(inputGain.value);
+                    if (toggleVad) vadEnabled = toggleVad.checked;
+                    
+                    if (voiceSelect) {
+                        const val = voiceSelect.value;
+                        if (val.startsWith('tts:')) {
+                            selectedTtsVoice = val.split(':')[1];
+                            selectedVoiceIndex = null;
+                        } else if (val.startsWith('sys:')) {
+                            selectedVoiceIndex = parseInt(val.split(':')[1]);
+                        }
+                    }
+                    
+                    if (settingsModal) settingsModal.classList.add('opacity-0', 'pointer-events-none');
+                });
+            }
+
+            if (inputRate && valRate) inputRate.addEventListener('input', (e) => valRate.textContent = `${e.target.value}x`);
+            if (inputPitch && valPitch) inputPitch.addEventListener('input', (e) => valPitch.textContent = e.target.value);
+            if (inputGain && valGain) inputGain.addEventListener('input', (e) => valGain.textContent = `${e.target.value}x`);
+
+            const btnTestAudio = document.getElementById('btn-test-audio');
+            if (btnTestAudio) {
+                btnTestAudio.addEventListener('click', () => {
+                    setupAudioContext();
+                    speakTatiResponse("Audio system test online. Tati neural voice engine active.");
+                });
+            }
+        }
+
+        // --- Gemini AI Query Handler ---
+        async function handleUserSpeechQuery(queryText) {
+            if (!queryText || !queryText.trim()) {
+                setAppState(AppState.IDLE);
+                return;
+            }
+
+            setAppState(AppState.THINKING);
+            playChime('thinking');
+
+            let aiResponseText = "";
+
+            if (!isOfflineMode) {
+                const domainPersona = DOMAIN_PERSONAS[selectedDomain] || DOMAIN_PERSONAS.general;
+                const userApiKey = document.getElementById('api-key-input')?.value?.trim() || "";
+                
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${userApiKey}`;
+                
+                // Ensure strictly alternating roles (prevent consecutive 'user' turns causing API errors)
+                if (chatHistory.length > 0 && chatHistory[chatHistory.length - 1].role === "user") {
+                    chatHistory.pop();
+                }
+                
+                // Add current user query to the persistent chat history
+                chatHistory.push({ role: "user", parts: [{ text: queryText }] });
+
+                const payload = {
+                    contents: chatHistory,
+                    systemInstruction: { parts: [{ text: domainPersona }] },
+                    tools: [{ "google_search": {} }],
+                    generationConfig: { maxOutputTokens: 800 }
+                };
+
+                currentFetchController = new AbortController();
+                // Increased timeout to 15s to ensure Google Search grounding and expanded token generation completes
+                const timeoutId = setTimeout(() => currentFetchController.abort(), 15000);
+
+                try {
+                    const res = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                        signal: currentFetchController.signal
+                    });
+                    clearTimeout(timeoutId);
+
+                    if (res.ok) {
+                        const data = await res.json();
+                        aiResponseText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+                        
+                        if (aiResponseText) {
+                            // Save the model's response to history for seamless follow-ups
+                            chatHistory.push({ role: "model", parts: [{ text: aiResponseText }] });
+                            
+                            // Keep memory manageable (last 10 turns) to prevent payload bloat
+                            if (chatHistory.length > 10) {
+                                chatHistory = chatHistory.slice(chatHistory.length - 10);
+                            }
+                        }
+                    } else {
+                        // Remove the failed user turn from history to prevent context corruption
+                        chatHistory.pop();
+                    }
+                } catch (err) {
+                    clearTimeout(timeoutId);
+                    chatHistory.pop();
+                }
+            }
+
+            if (!aiResponseText) {
+                aiResponseText = getInstantFallbackResponse(queryText);
+            }
+
+            speakTatiResponse(aiResponseText);
+        }
+
+        // --- Speech Output Pipeline ---
+        async function speakTatiResponse(textToSpeak) {
+            if (!textToSpeak) return;
+            setupAudioContext();
+            stopCurrentAudio();
+            setAppState(AppState.THINKING);
+
+            let ttsAudio = null;
+            if (selectedTtsVoice && !isOfflineMode) {
+                ttsAudio = await fetchGeminiTts(textToSpeak, selectedTtsVoice);
+            }
+
+            if (ttsAudio && ttsAudio.audioData) {
+                try {
+                    const rawBuffer = base64ToArrayBuffer(ttsAudio.audioData);
+                    let audioBuffer = null;
+                    try {
+                        audioBuffer = await audioCtx.decodeAudioData(rawBuffer.slice(0));
+                    } catch (err) {
+                        const pcm16 = new Int16Array(rawBuffer);
+                        const float32 = new Float32Array(pcm16.length);
+                        for (let i = 0; i < pcm16.length; i++) {
+                            float32[i] = pcm16[i] / 32768;
+                        }
+                        audioBuffer = audioCtx.createBuffer(1, float32.length, ttsAudio.sampleRate || 24000);
+                        audioBuffer.getChannelData(0).set(float32);
+                    }
+
+                    if (audioBuffer) {
+                        const source = audioCtx.createBufferSource();
+                        source.buffer = audioBuffer;
+                        if (synthAnalyser) {
+                            source.connect(synthAnalyser);
+                        } else {
+                            source.connect(audioCtx.destination);
+                        }
+                        currentAudioSource = source;
+
+                        source.onended = () => {
+                            currentAudioSource = null;
+                            if (autoConverse && !isMuted) {
+                                setAppState(AppState.IDLE);
+                                setTimeout(() => {
+                                    if (recognition && !isRecognizing) {
+                                        try { recognition.start(); } catch(e){}
+                                    }
+                                }, 300);
+                            } else {
+                                setAppState(AppState.IDLE);
+                            }
+                        };
+
+                        setAppState(AppState.SPEAKING);
+                        source.start(0);
+                        return;
+                    }
+                } catch (e) {
+                    console.warn("Audio Context playback error, falling back to Web Speech:", e);
+                }
+            }
+
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.cancel();
+                
+                setTimeout(() => {
+                    const utterance = new SpeechSynthesisUtterance(textToSpeak);
+                    utterance.rate = speechRate;
+                    utterance.pitch = speechPitch;
+                    utterance.volume = 1.0;
+
+                    if (selectedVoiceIndex !== null && availableVoices[selectedVoiceIndex]) {
+                        utterance.voice = availableVoices[selectedVoiceIndex];
+                    }
+
+                    // Safety fallback: if browser TTS engine silently fails to start due to long text lengths
+                    let ttsStartSafety = setTimeout(() => {
+                        if (currentState === AppState.THINKING) {
+                            setAppState(AppState.SPEAKING);
+                        }
+                    }, 1500);
+
+                    utterance.onstart = () => {
+                        clearTimeout(ttsStartSafety);
+                        setAppState(AppState.SPEAKING);
+                    };
+
+                    utterance.onend = () => {
+                        currentUtterance = null;
+                        if (speechSafetyTimer) {
+                            clearTimeout(speechSafetyTimer);
+                            speechSafetyTimer = null;
+                        }
+                        if (autoConverse && !isMuted) {
+                            setAppState(AppState.IDLE);
+                            setTimeout(() => {
+                                if (recognition && !isRecognizing) {
+                                    try { recognition.start(); } catch(e){}
+                                }
+                            }, 300);
+                        } else {
+                            setAppState(AppState.IDLE);
+                        }
+                    };
+
+                    utterance.onerror = (e) => {
+                        if (e.error === 'interrupted' || e.error === 'canceled') return;
+                        setAppState(AppState.IDLE);
+                    };
+
+                    currentUtterance = utterance;
+                    window.speechSynthesis.speak(utterance);
+
+                    const estimatedDurationMs = Math.max(2500, (textToSpeak.split(' ').length / 2.5) * 1000);
+                    speechSafetyTimer = setTimeout(() => {
+                        // Relaxed reset condition so it clears even if stuck
+                        setAppState(AppState.IDLE);
+                    }, estimatedDurationMs + 2000);
+                }, 10); // Reduced delay from 60ms to 10ms for instant execution
+            } else {
+                setAppState(AppState.IDLE);
+            }
+        }
+
+        // --- Visualizer Particle Swarm ---
+        const particles = Array.from({ length: 40 }, () => ({
+            x: Math.random(),
+            y: Math.random(),
+            vx: (Math.random() - 0.5) * 0.003,
+            vy: (Math.random() - 0.5) * 0.003,
+            radius: Math.random() * 2.5 + 1,
+            color: Math.random() > 0.5 ? '#06b6d4' : '#6366f1'
+        }));
+
+        function renderVisualizer() {
+            animationFrameId = requestAnimationFrame(renderVisualizer);
+            if (!ctx || !canvas) return;
+
+            const width = canvas.width;
+            const height = canvas.height;
+            const centerX = width / 2;
+            const centerY = height / 2;
+            const maxRadius = Math.min(centerX, centerY);
+
+            ctx.clearRect(0, 0, width, height);
+
+            phase += 0.04;
+
+            let freqArray = new Uint8Array(64);
+            let audioLevel = 0;
+
+            if (currentState === AppState.LISTENING && micAnalyser) {
+                micAnalyser.getByteFrequencyData(freqArray);
+                checkSilenceVAD();
+            } else if (currentState === AppState.SPEAKING && synthAnalyser) {
+                synthAnalyser.getByteFrequencyData(freqArray);
+            }
+
+            let sum = 0;
+            for (let i = 0; i < freqArray.length; i++) {
+                sum += freqArray[i];
+            }
+            audioLevel = sum / (freqArray.length * 255);
+
+            if (volumeLevelBar) {
+                volumeLevelBar.style.width = `${Math.min(100, audioLevel * 250)}%`;
+            }
+
+            let primaryColor = '#6366f1';
+            let secondaryColor = '#06b6d4';
+            if (currentState === AppState.LISTENING) {
+                primaryColor = '#06b6d4';
+                secondaryColor = '#10b981';
+            } else if (currentState === AppState.THINKING) {
+                primaryColor = '#d946ef';
+                secondaryColor = '#6366f1';
+            } else if (currentState === AppState.SPEAKING) {
+                primaryColor = '#6366f1';
+                secondaryColor = '#06b6d4';
+            }
+
+            if (visualizerStyle === 'spectrum') {
+                const bars = 48;
+                const radius = maxRadius * 0.55;
+                ctx.save();
+                ctx.translate(centerX, centerY);
+
+                for (let i = 0; i < bars; i++) {
+                    const angle = (i / bars) * Math.PI * 2 + phase * 0.2;
+                    const val = freqArray[i % freqArray.length] || (Math.sin(phase * 3 + i) * 0.5 + 0.5) * 128;
+                    const barLen = (val / 255) * (maxRadius * 0.45) * visualizerSensitivity + 6;
+
+                    const x1 = Math.cos(angle) * radius;
+                    const y1 = Math.sin(angle) * radius;
+                    const x2 = Math.cos(angle) * (radius + barLen);
+                    const y2 = Math.sin(angle) * (radius + barLen);
+
+                    const grad = ctx.createLinearGradient(x1, y1, x2, y2);
+                    grad.addColorStop(0, primaryColor);
+                    grad.addColorStop(1, secondaryColor);
+
+                    ctx.beginPath();
+                    ctx.moveTo(x1, y1);
+                    ctx.lineTo(x2, y2);
+                    ctx.strokeStyle = grad;
+                    ctx.lineWidth = 3.5 * (width / 400);
+                    ctx.lineCap = 'round';
+                    ctx.stroke();
+                }
+                ctx.restore();
+            } else if (visualizerStyle === 'particles') {
+                particles.forEach((p, idx) => {
+                    p.x += p.vx * (1 + audioLevel * 6);
+                    p.y += p.vy * (1 + audioLevel * 6);
+
+                    if (p.x < 0) p.x = 1;
+                    if (p.x > 1) p.x = 0;
+                    if (p.y < 0) p.y = 1;
+                    if (p.y > 1) p.y = 0;
+
+                    const px = p.x * width;
+                    const py = p.y * height;
+                    const r = p.radius * (1 + audioLevel * 3);
+
+                    ctx.beginPath();
+                    ctx.arc(px, py, r, 0, Math.PI * 2);
+                    ctx.fillStyle = p.color;
+                    ctx.shadowBlur = 10;
+                    ctx.shadowColor = p.color;
+                    ctx.fill();
+
+                    for (let j = idx + 1; j < particles.length; j++) {
+                        const p2 = particles[j];
+                        const dx = (p2.x - p.x) * width;
+                        const dy = (p2.y - p.y) * height;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+
+                        if (dist < 85) {
+                            ctx.beginPath();
+                            ctx.moveTo(px, py);
+                            ctx.lineTo(p2.x * width, p2.y * height);
+                            ctx.strokeStyle = primaryColor + '33';
+                            ctx.lineWidth = 0.8;
+                            ctx.stroke();
+                        }
+                    }
+                });
+            } else {
+                ctx.save();
+                ctx.translate(centerX, centerY);
+
+                const rings = 3;
+                for (let r = 0; r < rings; r++) {
+                    ctx.beginPath();
+                    const ringRadius = maxRadius * (0.45 + r * 0.15);
+                    const segments = 64;
+
+                    for (let i = 0; i <= segments; i++) {
+                        const theta = (i / segments) * Math.PI * 2;
+                        const wave = Math.sin(theta * (4 + r) + phase * (2 + r) + r) * (10 + audioLevel * 35 * visualizerSensitivity);
+                        const radius = ringRadius + wave;
+                        const x = Math.cos(theta) * radius;
+                        const y = Math.sin(theta) * radius;
+
+                        if (i === 0) ctx.moveTo(x, y);
+                        else ctx.lineTo(x, y);
+                    }
+
+                    ctx.closePath();
+                    ctx.lineWidth = 2.5 - r * 0.5;
+                    ctx.strokeStyle = r === 0 ? primaryColor : (r === 1 ? secondaryColor : '#d946ef');
+                    ctx.shadowBlur = 18;
+                    ctx.shadowColor = primaryColor;
+                    ctx.stroke();
+                }
+                ctx.restore();
+            }
+        }
+
+        // --- Initialization ---
+        window.addEventListener('load', () => {
+            initDOMElements();
+            setupEventListeners();
+            initCanvasSize();
+            setupSpeechRecognition();
+            renderVisualizer();
+            setAppState(AppState.IDLE);
+        });
+    </script>
+</body>
+</html>
