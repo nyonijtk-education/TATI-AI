@@ -1,78 +1,13 @@
-btnStartConsole.addEventListener('click', initiateWelcomeConsole);
-            
-            mainMicOrb.addEventListener('click', triggerVoicePipeline);
-            
-            btnAutoListen.addEventListener('click', () => {
-                autoConverse = !autoConverse;
-                btnAutoListen.classList.toggle('active', autoConverse);
-            });
-            
-            btnWakeToggle.addEventListener('click', () => {
-                wakeWordEnabled = !wakeWordEnabled;
-                btnWakeToggle.classList.toggle('active', wakeWordEnabled);
-                toggleWake.checked = wakeWordEnabled;
-                document.getElementById('hud-wakeword').textContent = wakeWordEnabled ? 'Voice-to-Wake ("Hey Tati")' : 'Wake-Word Disabled';
-                setState(AppState.IDLE);
-            });
-            
-            btnMute.addEventListener('click', () => {
-                isMuted = !isMuted;
-                btnMute.classList.toggle('text-rose-400', isMuted);
-                btnMute.classList.toggle('text-gray-300', !isMuted);
-                muteIcon.className = isMuted ? 'fa-solid fa-microphone-slash text-base' : 'fa-solid fa-microphone text-base';
-                if (isMuted) {
-                    stopWakeWordListener();
-                } else if (wakeWordEnabled && currentState === AppState.IDLE) {
-                    setState(AppState.IDLE);
-                }
-            });
-            
-            btnStopAudio.addEventListener('click', () => {
-                stopAudioPlayback();
-                if (activeVoiceListener) activeVoiceListener.stop();
-                setState(AppState.IDLE);
-            });
-            
-            btnSettingsToggle.addEventListener('click', () => {
-                settingsModal.classList.remove('opacity-0', 'pointer-events-none');
-            });
-            
-            btnCloseSettings.addEventListener('click', () => {
-                settingsModal.classList.add('opacity-0', 'pointer-events-none');
-            });
-            
-            btnSaveSettings.addEventListener('click', () => {
-                currentLanguage = languageSelect.value;
-                selectedVoiceName = voiceSelect.value;
-                speechRate = parseFloat(inputRate.value);
-                
-                wakeWordEnabled = toggleWake.checked;
-                btnWakeToggle.classList.toggle('active', wakeWordEnabled);
-                document.getElementById('hud-wakeword').textContent = wakeWordEnabled ? 'Voice-to-Wake ("Hey Tati")' : 'Wake-Word Disabled';
-                
-                settingsModal.classList.add('opacity-0', 'pointer-events-none');
-                setState(AppState.IDLE);
-            });
-            
-            inputRate.addEventListener('input', (e) => {
-                valRate.textContent = parseFloat(e.target.value).toFixed(1) + 'x';
-            });
-            
-            document.querySelectorAll('.viz-style-btn').forEach(btn => {
-                btn.addEventListener('click', (e) => {
-                    document.querySelectorAll('.viz-style-btn').forEach(b => b.classList.remove('active'));
-                    e.target.classList.add('active');
-                    visualizerStyle = e.target.dataset.viz;
-                });
-            });
-        }
-
-        // Boot up the application
-        document.addEventListener('DOMContentLoaded', () => {
-            initDOMElements();
-            bindEvents();
-            requestAnimationFrame(drawVisualizer);
-        });
-    </script>
-</body>
-</html>
+{
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "routes": [
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
+  ]
+}
