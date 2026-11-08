@@ -1,42 +1,84 @@
-// Dynamic Base URL: Prioritizes environment variables (Vercel/Next.js/CRA), 
-// falling back to your current active Cloudflare Tunnel endpoint.
-const API_BASE_URL = 
-  (typeof process !== "undefined" && process.env && (process.env.NEXT_PUBLIC_API_URL || process.env.REACT_APP_API_URL)) ||
-  "https://goat-tsunami-give-putting.trycloudflare.com";
+// Dynamic Base URL Resolution:
+// Uses localhost:8000 when developing locally on localhost:3000, 
+// or falls back to Cloudflare Tunnel / Vercel Environment Variables in production.
+const getBaseUrl = () => {
+  if (typeof process !== "undefined" && process.env) {
+    if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+    if (process.env.REACT_APP_API_URL) return process.env.REACT_APP_API_URL;
+  }
+  if (typeof window !== "undefined" && window.location.hostname === "localhost") {
+    return "http://localhost:8000";
+  }
+  return "https://goat-tsunami-give-putting.trycloudflare.com";
+};
 
-// Initialize browser Speech Recognition (Web Speech API)
+const API_BASE_URL = getBaseUrl();
+
+// Initialize Speech Recognition API across browsers
 const SpeechRecognition = 
   typeof window !== "undefined" && 
   (window.SpeechRecognition || window.webkitSpeechRecognition);
 
+// Prevent Chrome Garbage Collection from dropping audio mid-speech
+window._currentUtterance = null;
+
 /**
- * 1. Web Speech API - Text-to-Speech (Voice Output)
- * Speaks the response back to the user via browser speech synthesis.
- * @param {string} text - The response text to synthesize into speech.
+ * Pre-warms browser audio context synchronously on user interaction
  */
-export function speakResponse(text) {
-  if (typeof window === "undefined" || !('speechSynthesis' in window)) {
-    console.warn("Text-to-speech is not supported in this browser environment.");
-    return;
+export function prewarmAudio() {
+  if (typeof window !== "undefined" && "speechSynthesis" in window) {
+    window.speechSynthesis.resume();
+    const silent = new SpeechSynthesisUtterance("");
+    window.speechSynthesis.speak(silent);
   }
-
-  // Cancel any active speech output before starting a new utterance
-  window.speechSynthesis.cancel();
-
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = 1.0;
-  utterance.pitch = 1.0;
-  utterance.lang = 'en-US';
-
-  window.speechSynthesis.speak(utterance);
 }
 
 /**
- * 2. Web Speech API - Speech-to-Text Listener
- * Captures user speech via microphone and converts it to text.
- * @param {Function} onResultCallback - Called with the transcribed text string.
- * @param {Function} onErrorCallback - Called if speech recognition encounters an error.
- * @returns {Object|null} Control object with start() and stop() methods, or null if unsupported.
+ * Web Speech API - Native Browser Text-to-Speech
+ * @param {string} text - Response text to speak
+ */
+export function speakResponse(text) {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+    console.warn("Text-to-speech is not supported in this browser.");
+    return;
+  }
+
+  // Clear existing queue and unpause engine
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.resume();
+
+  const speak = () => {
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+    utterance.lang = "en-US";
+
+    // Set voice if available
+    const voices = window.speechSynthesis.getVoices();
+    if (voices.length > 0) {
+      utterance.voice = voices.find((v) => v.lang.includes("en")) || voices[0];
+    }
+
+    utterance.onstart = () => console.log("🔊 Tati Voice AI is speaking...");
+    utterance.onend = () => console.log("✅ Speech playback finished.");
+    utterance.onerror = (e) => console.error("❌ Audio synthesis error:", e);
+
+    // Retain global reference
+    window._currentUtterance = utterance;
+    window.speechSynthesis.speak(utterance);
+  };
+
+  if (window.speechSynthesis.getVoices().length === 0) {
+    window.speechSynthesis.onvoiceschanged = speak;
+  } else {
+    speak();
+  }
+}
+
+/**
+ * Web Speech API - Speech-to-Text Recognition
+ * @param {Function} onResultCallback - Receives transcribed text
+ * @param {Function} onErrorCallback - Receives recognition error
  */
 export function listenToVoice(onResultCallback, onErrorCallback) {
   if (!SpeechRecognition) {
@@ -46,10 +88,12 @@ export function listenToVoice(onResultCallback, onErrorCallback) {
     return null;
   }
 
+  prewarmAudio();
+
   const recognition = new SpeechRecognition();
   recognition.continuous = false;
   recognition.interimResults = false;
-  recognition.lang = 'en-US';
+  recognition.lang = "en-US";
 
   recognition.onresult = (event) => {
     const transcript = event.results[0][0].transcript;
@@ -68,16 +112,16 @@ export function listenToVoice(onResultCallback, onErrorCallback) {
 }
 
 /**
- * 3. Voice RAG Pipeline Request
- * Sends transcribed voice input to your FastAPI backend via Cloudflare Tunnel.
- * @param {string} transcript - The user's spoken or typed transcript query.
- * @param {boolean} autoSpeak - Whether to automatically trigger TTS for the LLM answer.
- * @returns {Promise<Object>} Server response object containing responseText and databaseHits.
+ * Sends spoken query to FastAPI RAG backend (/api/chat)
+ * @param {string} transcript - Spoken user query
+ * @param {boolean} autoSpeak - Automatically trigger TTS upon response
  */
 export async function sendVoiceQuery(transcript, autoSpeak = true) {
   if (!transcript || !transcript.trim()) {
     throw new Error("Voice transcript cannot be empty.");
   }
+
+  if (autoSpeak) prewarmAudio();
 
   try {
     const response = await fetch(`${API_BASE_URL}/api/chat`, {
@@ -97,7 +141,6 @@ export async function sendVoiceQuery(transcript, autoSpeak = true) {
 
     const data = await response.json();
 
-    // Automatically speak Llama 3's synthesized answer if autoSpeak is enabled
     if (autoSpeak && data.response_text) {
       speakResponse(data.response_text);
     }
@@ -105,19 +148,16 @@ export async function sendVoiceQuery(transcript, autoSpeak = true) {
     return {
       responseText: data.response_text,
       databaseHits: data.database_hits,
+      hits: data.hits || [],
     };
   } catch (error) {
-    console.error("Error connecting to Tati Voice RAG Backend:", error);
+    console.error("Error connecting to Tati RAG Voice Backend:", error);
     throw error;
   }
 }
 
 /**
- * 4. Raw Database Search Request
- * Queries Meilisearch index directly via FastAPI /search endpoint.
- * @param {string} query - The search query term.
- * @param {number} limit - Maximum number of matching records to retrieve.
- * @returns {Promise<Object>} Raw JSON search results from Meilisearch.
+ * Direct Meilisearch search helper
  */
 export async function searchAcademicRecords(query, limit = 20) {
   if (!query || !query.trim()) {
