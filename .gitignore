@@ -1,1 +1,6 @@
-.vercel
+.venv/
+data.ms/
+dumps/
+.vercel/
+__pycache__/
+*.pyc
