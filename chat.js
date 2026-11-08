@@ -11,7 +11,8 @@ const getBaseUrl = () => {
   if (typeof window !== "undefined" && window.location.hostname === "localhost") {
     return "http://localhost:8000";
   }
-  return "http://127.0.0.1:8000";
+  // Updated with the new Cloudflare Quick Tunnel URL
+  return "https://jake-genuine-indirect-minus.trycloudflare.com"; 
 };
 
 const API_BASE_URL = getBaseUrl();
