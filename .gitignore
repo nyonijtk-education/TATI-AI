@@ -4,3 +4,5 @@ dumps/
 .vercel/
 __pycache__/
 *.pyc
+.env.local
+.env.local
