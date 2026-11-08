@@ -12,7 +12,7 @@ const getBaseUrl = () => {
     return "http://localhost:8000";
   }
   // Updated with the new Cloudflare Quick Tunnel URL
-  return "https://jake-genuine-indirect-minus.trycloudflare.com"; 
+  return "https://buy-availability-cambridge-antivirus.trycloudflare.com"; 
 };
 
 const API_BASE_URL = getBaseUrl();

@@ -586,57 +586,61 @@
 
         function bindEvents() {
             window.addEventListener('resize', initCanvasSize);
-
+            
             btnStartConsole.addEventListener('click', initiateWelcomeConsole);
 
             mainMicOrb.addEventListener('click', () => {
-                if (currentState === AppState.LISTENING && activeVoiceListener) {
+                if (currentState === AppState.IDLE) triggerVoicePipeline();
+                else if (currentState === AppState.LISTENING && activeVoiceListener) {
                     activeVoiceListener.stop();
-                    setState(AppState.IDLE);
                 } else if (currentState === AppState.SPEAKING) {
                     stopAudioPlayback();
-                    setState(AppState.IDLE);
-                } else {
-                    triggerVoicePipeline();
+                    finishTurn();
                 }
             });
 
             btnWakeToggle.addEventListener('click', () => {
                 wakeWordEnabled = !wakeWordEnabled;
                 btnWakeToggle.classList.toggle('active', wakeWordEnabled);
-                if (wakeWordEnabled) {
-                    btnWakeToggle.innerHTML = '<i class="fa-solid fa-ear-listen text-sm animate-pulse"></i><span class="text-xs font-mono hidden sm:inline">WAKE-WORD ON</span>';
-                    if (currentState === AppState.IDLE) setState(AppState.IDLE);
-                } else {
-                    stopWakeWordListener();
-                    btnWakeToggle.innerHTML = '<i class="fa-solid fa-ear-deaf text-sm"></i><span class="text-xs font-mono hidden sm:inline">WAKE-WORD OFF</span>';
-                    if (currentState === AppState.IDLE) setState(AppState.IDLE);
-                }
+                btnWakeToggle.classList.toggle('text-emerald-400', wakeWordEnabled);
+                btnWakeToggle.classList.toggle('text-gray-300', !wakeWordEnabled);
+                document.getElementById('hud-wakeword').textContent = wakeWordEnabled ? 'Voice-to-Wake ("Hey Tati")' : 'Tap-to-Talk (Manual)';
+                
+                if (currentState === AppState.IDLE) setState(AppState.IDLE); 
             });
 
             btnAutoListen.addEventListener('click', () => {
                 autoConverse = !autoConverse;
                 btnAutoListen.classList.toggle('active', autoConverse);
+                btnAutoListen.classList.toggle('text-brand-cyan', autoConverse);
+                btnAutoListen.classList.toggle('text-gray-300', !autoConverse);
             });
 
             btnMute.addEventListener('click', () => {
                 isMuted = !isMuted;
-                muteIcon.className = isMuted ? "fa-solid fa-microphone-slash text-rose-400" : "fa-solid fa-microphone text-gray-300";
-                if (isMuted) stopWakeWordListener();
-                else if (currentState === AppState.IDLE && wakeWordEnabled) setState(AppState.IDLE);
+                btnMute.classList.toggle('active', isMuted);
+                btnMute.classList.toggle('text-rose-400', isMuted);
+                btnMute.classList.toggle('text-gray-300', !isMuted);
+                muteIcon.className = isMuted ? "fa-solid fa-microphone-slash text-base" : "fa-solid fa-microphone text-base";
+                
+                if (isMuted) {
+                    stopWakeWordListener();
+                    if (currentState === AppState.LISTENING && activeVoiceListener) activeVoiceListener.stop();
+                } else {
+                    if (currentState === AppState.IDLE) setState(AppState.IDLE); 
+                }
             });
 
             btnStopAudio.addEventListener('click', () => {
                 stopAudioPlayback();
-                if (activeVoiceListener) activeVoiceListener.stop();
-                setState(AppState.IDLE);
+                if (currentState === AppState.SPEAKING) finishTurn();
             });
 
             document.querySelectorAll('.viz-style-btn').forEach(btn => {
                 btn.addEventListener('click', (e) => {
                     document.querySelectorAll('.viz-style-btn').forEach(b => b.classList.remove('active'));
-                    e.currentTarget.classList.add('active');
-                    visualizerStyle = e.currentTarget.getAttribute('data-viz');
+                    e.target.classList.add('active');
+                    visualizerStyle = e.target.dataset.viz;
                 });
             });
 
@@ -648,19 +652,27 @@
                 settingsModal.classList.add('opacity-0', 'pointer-events-none');
             });
 
-            inputRate.addEventListener('input', (e) => valRate.textContent = `${e.target.value}x`);
+            inputRate.addEventListener('input', (e) => {
+                valRate.textContent = `${parseFloat(e.target.value).toFixed(2)}x`;
+            });
 
             btnSaveSettings.addEventListener('click', () => {
                 currentLanguage = languageSelect.value;
                 selectedVoiceName = voiceSelect.value;
                 speechRate = parseFloat(inputRate.value);
-                wakeWordEnabled = toggleWake.checked;
+                
+                const newWakeState = toggleWake.checked;
+                if (newWakeState !== wakeWordEnabled) {
+                    btnWakeToggle.click(); 
+                }
+
                 settingsModal.classList.add('opacity-0', 'pointer-events-none');
+                
                 if (currentState === AppState.IDLE) setState(AppState.IDLE);
             });
         }
 
-        window.addEventListener('DOMContentLoaded', () => {
+        document.addEventListener('DOMContentLoaded', () => {
             initDOMElements();
             bindEvents();
             drawVisualizer();
