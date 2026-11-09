@@ -1,6 +1,4 @@
 // Complete production-ready chat.js for Tati Voice AI Platform
-// Integrates LocalTunnel bypass headers, iOS Audio Context unlocks, native mic prompt triggers, and speech synthesis fallback.
-
 const BACKEND_URL = 'https://tati-voice-ai-backend.loca.lt';
 
 const AudioContextClass = window.AudioContext || window.webkitAudioContext;
@@ -8,7 +6,7 @@ let audioCtx = null;
 let recognition = null;
 let isProcessing = false;
 
-// 1. iOS Audio Context Unlocker (Must be called on direct user interaction)
+// 1. iOS / Safari Audio Context Unlocker
 function unlockIOSAudio() {
     if (!audioCtx) {
         audioCtx = new AudioContextClass();
@@ -27,11 +25,11 @@ function unlockIOSAudio() {
     }
 }
 
-// 2. Explicit User-Gesture Microphone Permission Trigger for Mobile Safari
+// 2. Explicit Microphone Permission Trigger
 async function requestMobileMicrophone() {
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        // Instantly release tracks so Web Speech API can take control of hardware microphone
+        // Instantly release tracks so Web Speech API can control the mic hardware line
         stream.getTracks().forEach(track => track.stop());
         return true;
     } catch (err) {
@@ -52,7 +50,7 @@ function updateUI(statusText, visualState = '') {
     }
 }
 
-// 4. Web Speech Synthesis Fallback (Used if Local Kokoro TTS is unavailable)
+// 4. Web Speech Synthesis Fallback
 function speakFallback(text, onComplete) {
     if (!('speechSynthesis' in window)) {
         if (onComplete) onComplete();
@@ -62,9 +60,7 @@ function speakFallback(text, onComplete) {
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 1.0;
     utterance.pitch = 1.0;
-    utterance.onend = () => {
-        if (onComplete) onComplete();
-    };
+    utterance.onend = () => { if (onComplete) onComplete(); };
     utterance.onerror = (err) => {
         console.error("SpeechSynthesis error:", err);
         if (onComplete) onComplete();
@@ -72,7 +68,7 @@ function speakFallback(text, onComplete) {
     window.speechSynthesis.speak(utterance);
 }
 
-// 5. End-to-End Pipeline Handler
+// 5. End-to-End Voice & LLM Pipeline Handler
 async function sendVoiceQuery(queryText) {
     if (isProcessing) return;
     isProcessing = true;
@@ -80,7 +76,6 @@ async function sendVoiceQuery(queryText) {
     unlockIOSAudio();
     updateUI("THINKING...", "thinking");
 
-    // Pause listener on mobile/desktop so audio output hardware line is clear
     if (recognition) {
         try { recognition.stop(); } catch (e) {}
     }
@@ -96,7 +91,6 @@ async function sendVoiceQuery(queryText) {
     try {
         console.log("Sending query to backend:", queryText);
 
-        // Fetch LLM inference response with bypass header for LocalTunnel
         const chatResponse = await fetch(`${BACKEND_URL}/api/chat`, {
             method: 'POST',
             headers: {
@@ -112,11 +106,9 @@ async function sendVoiceQuery(queryText) {
 
         const chatData = await chatResponse.json();
         const replyText = chatData.response || chatData.reply || "No response received.";
-        console.log("LLM Response received:", replyText);
 
         updateUI("TATI SPEAKING", "speaking");
 
-        // Fetch Kokoro TTS synthesized audio stream
         try {
             const ttsResponse = await fetch(`${BACKEND_URL}/api/tts`, {
                 method: 'POST',
@@ -141,7 +133,7 @@ async function sendVoiceQuery(queryText) {
             };
 
             audio.onerror = (err) => {
-                console.warn("Kokoro audio playback failed, triggering browser TTS fallback:", err);
+                console.warn("Kokoro audio playback failed, triggering browser fallback:", err);
                 speakFallback(replyText, resumeListener);
             };
 
@@ -159,7 +151,7 @@ async function sendVoiceQuery(queryText) {
     }
 }
 
-// 6. Speech Recognition Listener & Wake Word Initialization
+// 6. Speech Recognition Listener Initialization
 function initSpeechRecognition() {
     const SpeechRecognitionClass = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognitionClass) {
@@ -213,31 +205,58 @@ function initSpeechRecognition() {
     };
 }
 
-// 7. Event Attachment
+// 7. Global Window Method - Called by "START VOICE CONSOLE" button in index.html
+window.initiateWelcomeConsole = async function() {
+    // Hide the welcome overlay modal
+    const welcomeOverlay = document.getElementById('welcome-overlay') || 
+                           document.getElementById('welcome-screen') || 
+                           document.getElementById('welcome-modal') ||
+                           document.querySelector('.welcome-modal') ||
+                           document.querySelector('.fixed.inset-0') ||
+                           document.querySelector('[class*="z-50"]');
+                           
+    if (welcomeOverlay) {
+        welcomeOverlay.style.display = 'none';
+    }
+
+    // Unlock Web Audio for iOS Safari & Desktop
+    unlockIOSAudio();
+
+    // Trigger explicit mic permission prompt
+    const micGranted = await requestMobileMicrophone();
+
+    if (micGranted) {
+        if (!recognition) {
+            initSpeechRecognition();
+        }
+        try {
+            if (recognition) recognition.start();
+        } catch (e) {
+            console.log("Recognition active:", e);
+        }
+    }
+};
+
+// 8. Event Listener Attachment
 document.addEventListener('DOMContentLoaded', () => {
     const orbButton = document.getElementById('orb-button') || document.querySelector('.orb-container');
+    const startButton = document.querySelector('button[onclick*="initiateWelcomeConsole"]') || 
+                        document.querySelector('button:has(span)');
 
-    // Attach unlock handlers across touch and click interactions
     document.addEventListener('touchstart', unlockIOSAudio, { passive: true });
     document.addEventListener('click', unlockIOSAudio, { passive: true });
 
-    initSpeechRecognition();
+    if (startButton) {
+        startButton.addEventListener('click', window.initiateWelcomeConsole);
+    }
 
     if (orbButton) {
         orbButton.addEventListener('click', async () => {
             unlockIOSAudio();
             const micGranted = await requestMobileMicrophone();
-
             if (micGranted) {
-                if (recognition) {
-                    try {
-                        recognition.start();
-                    } catch (e) {
-                        console.log("Recognition session already running:", e);
-                    }
-                } else {
-                    initSpeechRecognition();
-                }
+                if (!recognition) initSpeechRecognition();
+                try { recognition.start(); } catch (e) {}
             }
         });
     }
