@@ -8,11 +8,11 @@ const getBaseUrl = () => {
     if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
     if (process.env.REACT_APP_API_URL) return process.env.REACT_APP_API_URL;
   }
-  if (typeof window !== "undefined" && window.location.hostname === "localhost") {
-    return "http://localhost:8000";
+  if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
+    return "http://127.0.0.1:8000";
   }
-  // Updated with the new Cloudflare Quick Tunnel URL
-  return "https://buy-availability-cambridge-antivirus.trycloudflare.com"; 
+  // Active Cloudflare Quick Tunnel Endpoint
+  return "https://witnesses-cooked-inn-architectural.trycloudflare.com"; 
 };
 
 const API_BASE_URL = getBaseUrl();
@@ -238,7 +238,13 @@ export function listenToVoice(onResultCallback, onErrorCallback, lang = "en-US")
   };
 }
 
-export async function sendVoiceQuery(transcript, autoSpeak = true, preferredVoiceName = "af_heart", lang = "en-US", rate = 1.0) {
+export async function sendVoiceQuery(
+  transcript, 
+  autoSpeak = true, 
+  preferredVoiceName = "af_heart", 
+  lang = "en-US", 
+  rate = 1.0
+) {
   if (!transcript || !transcript.trim()) {
     throw new Error("Voice transcript cannot be empty.");
   }
@@ -259,6 +265,13 @@ export async function sendVoiceQuery(transcript, autoSpeak = true, preferredVoic
 
     const data = await response.json();
 
+    // Log active execution provider (ollama_local vs groq_cloud)
+    if (data.provider === "groq_cloud") {
+      console.log("⚡ Fallback Active: Query processed via Groq Cloud.");
+    } else if (data.provider === "ollama_local") {
+      console.log("🟢 Primary Active: Query processed locally via Ollama.");
+    }
+
     if (autoSpeak && data.response_text) {
       speakResponse(data.response_text, null, preferredVoiceName, lang, rate);
     }
@@ -267,6 +280,7 @@ export async function sendVoiceQuery(transcript, autoSpeak = true, preferredVoic
       responseText: data.response_text,
       databaseHits: data.database_hits,
       hits: data.hits || [],
+      provider: data.provider || "unknown"
     };
   } catch (error) {
     console.error("Error connecting to Tati Backend:", error);
