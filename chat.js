@@ -30,11 +30,11 @@ const SpeechRecognition =
 window._currentAudio = null;
 window._currentUtterance = null;
 let activeWakeWordRecognition = null;
-let isProcessingQuery = false;
 
-// --- Helper UI & Modal Functions ---
+// --- Modal & UI Management ---
 
 function hideWelcomeModal() {
+  // 1. Target by explicit ID/class selectors
   const selectors = [
     '#welcome-overlay', '#welcome-modal', '#welcome-screen',
     '.welcome-modal', '[id*="welcome"]', '.fixed.inset-0', '[class*="z-50"]'
@@ -42,11 +42,25 @@ function hideWelcomeModal() {
   selectors.forEach(selector => {
     const el = document.querySelector(selector);
     if (el) {
-      el.style.display = 'none';
-      el.style.visibility = 'hidden';
-      el.style.opacity = '0';
-      el.style.pointerEvents = 'none';
-      el.classList.add('hidden');
+      el.style.setProperty('display', 'none', 'important');
+      el.style.setProperty('visibility', 'hidden', 'important');
+      el.style.setProperty('opacity', '0', 'important');
+      el.style.setProperty('pointer-events', 'none', 'important');
+    }
+  });
+
+  // 2. Target any container matching the "INITIALIZE TATI CONSOLE" overlay text
+  const allElements = document.querySelectorAll('div, section, main, overlay');
+  allElements.forEach(el => {
+    if (el.textContent && el.textContent.includes('INITIALIZE TATI CONSOLE') && el.children.length > 0) {
+      let topContainer = el;
+      while (topContainer.parentElement && topContainer.parentElement !== document.body) {
+        topContainer = topContainer.parentElement;
+      }
+      topContainer.style.setProperty('display', 'none', 'important');
+      topContainer.style.setProperty('visibility', 'hidden', 'important');
+      topContainer.style.setProperty('opacity', '0', 'important');
+      topContainer.style.setProperty('pointer-events', 'none', 'important');
     }
   });
 }
@@ -61,21 +75,25 @@ function updateStatusUI(statusText, visualState = '') {
   }
 }
 
-// --- Audio & Wake-Word Core ---
+// --- Audio & Prewarming ---
 
 function prewarmAudio() {
   if (typeof window !== "undefined" && "speechSynthesis" in window) {
-    window.speechSynthesis.resume();
-    const silent = new SpeechSynthesisUtterance("");
-    window.speechSynthesis.speak(silent);
+    try {
+      window.speechSynthesis.resume();
+      const silent = new SpeechSynthesisUtterance("");
+      window.speechSynthesis.speak(silent);
+    } catch (e) {}
   }
   
   // Unlock Web Audio Context for iOS Safari
-  const AudioCtx = window.AudioContext || window.webkitAudioContext;
-  if (AudioCtx) {
-    if (!window._audioCtx) window._audioCtx = new AudioCtx();
-    if (window._audioCtx.state === 'suspended') window._audioCtx.resume();
-  }
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (AudioCtx) {
+      if (!window._audioCtx) window._audioCtx = new AudioCtx();
+      if (window._audioCtx.state === 'suspended') window._audioCtx.resume();
+    }
+  } catch (e) {}
 }
 
 function stopAudioPlayback() {
@@ -88,6 +106,8 @@ function stopAudioPlayback() {
     window.speechSynthesis.cancel();
   }
 }
+
+// --- Voice Recognition & Wake-Word Listener ---
 
 function startWakeWordListener(onWakeCallback, targetWord = "tati", lang = "en-US") {
   if (!SpeechRecognition) return null;
@@ -326,7 +346,6 @@ async function sendVoiceQuery(
     const data = await response.json();
     const responseText = data.response_text || data.response || data.reply || "";
 
-    // Log active execution provider (ollama_local vs groq_cloud)
     if (data.provider === "groq_cloud") {
       console.log("⚡ Fallback Active: Query processed via Groq Cloud.");
     } else if (data.provider === "ollama_local") {
@@ -353,7 +372,7 @@ async function sendVoiceQuery(
   }
 }
 
-// --- Window & HTML Modal Integration Bridge ---
+// --- Global Entry Point for Welcome Console Button ---
 
 async function initiateWelcomeConsole() {
   hideWelcomeModal();
@@ -375,29 +394,33 @@ async function initiateWelcomeConsole() {
   );
 }
 
-// Bind functions to global window object
+// Bind all functions to window for global access
 window.SUPPORTED_LANGUAGES = SUPPORTED_LANGUAGES;
 window.prewarmAudio = prewarmAudio;
 window.stopAudioPlayback = stopAudioPlayback;
 window.startWakeWordListener = startWakeWordListener;
 window.stopWakeWordListener = stopWakeWordListener;
 window.speakResponse = speakResponse;
+window.fallbackWebSpeech = fallbackWebSpeech;
 window.listenToVoice = listenToVoice;
 window.sendVoiceQuery = sendVoiceQuery;
 window.initiateWelcomeConsole = initiateWelcomeConsole;
 window.hideWelcomeModal = hideWelcomeModal;
 
-// Event attachment for user clicks
+// DOM Event Listeners
 document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('touchstart', prewarmAudio, { passive: true });
   document.addEventListener('click', prewarmAudio, { passive: true });
 
-  const startBtn = document.querySelector('button[onclick*="initiateWelcomeConsole"]') || document.querySelector('button');
-  if (startBtn) {
-    startBtn.addEventListener('click', () => {
-      initiateWelcomeConsole();
-    });
-  }
+  const startButtons = document.querySelectorAll('button');
+  startButtons.forEach(btn => {
+    if (btn.textContent && btn.textContent.includes('START VOICE CONSOLE')) {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        initiateWelcomeConsole();
+      });
+    }
+  });
 
   const orb = document.getElementById('orb-button') || document.querySelector('.orb-container');
   if (orb) {
