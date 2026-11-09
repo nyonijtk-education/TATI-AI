@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import re
 import urllib.request
 import urllib.error
@@ -10,18 +11,80 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from dotenv import load_dotenv, find_dotenv
+from groq import Groq
 import uvicorn
+
+# Load local environment variables (.env.local or .env)
+env_file = find_dotenv(".env.local") or find_dotenv(".env")
+if env_file:
+    load_dotenv(env_file, override=True)
+    print(f"📁 Environment file loaded from: {env_file}")
+
+# Initialize Groq Client
+groq_api_key = os.getenv("GROQ_API_KEY")
+groq_client = None
+
+if groq_api_key:
+    groq_api_key = groq_api_key.strip("'\" \t\n;")
+    try:
+        groq_client = Groq(api_key=groq_api_key)
+        print("⚡ Groq Cloud Fallback initialized successfully.")
+    except Exception as e:
+        print(f"⚠️ Warning: Could not initialize Groq client: {e}")
+else:
+    print("⚠️ GROQ_API_KEY not found in environment variables.")
+
+def get_active_groq_model() -> str:
+    """Dynamically queries Groq to find supported text generation models for the current API key."""
+    if not groq_client:
+        return ""
+    
+    try:
+        response = groq_client.models.list()
+        available_ids = [m.id for m in response.data]
+        print(f"📋 Models accessible under your Groq key: {available_ids}")
+        
+        # Priority list matching accessible chat models on your account tier
+        preferred_candidates = [
+            "qwen/qwen3.8-27b",
+            "openai/gpt-oss-20b",
+            "openai/gpt-oss-120b",
+            "allam-2-7b",
+            "llama-3.1-8b-instant",
+            "llama-3.3-70b-versatile"
+        ]
+        
+        for candidate in preferred_candidates:
+            if candidate in available_ids:
+                print(f"🎯 Selected active model: {candidate}")
+                return candidate
+                
+        # Filter out speech/audio and guard models if no candidate matches
+        text_models = [
+            m_id for m_id in available_ids 
+            if not any(x in m_id.lower() for x in ["whisper", "orpheus", "guard"])
+        ]
+        if text_models:
+            selected = text_models[0]
+            print(f"🎯 Fallback model selected: {selected}")
+            return selected
+            
+    except Exception as e:
+        print(f"⚠️ Error fetching Groq models list: {e}")
+        
+    return "qwen/qwen3.8-27b"
 
 # Import Kokoro Neural TTS Pipeline
 try:
     from kokoro import KPipeline
-    tts_pipeline = KPipeline(lang_code='a')  # 'a' for American English, 'b' for British
+    tts_pipeline = KPipeline(lang_code='a')  # 'a' for American English
     print("✅ Kokoro-82M Neural TTS Engine loaded successfully.")
 except Exception as e:
     print(f"⚠️ Warning: Could not initialize Kokoro TTS pipeline: {e}")
     tts_pipeline = None
 
-app = FastAPI(title="Tati Voice AI Local RAG Backend (Kokoro Neural TTS)")
+app = FastAPI(title="Tati Voice AI Local RAG Backend (Kokoro Neural TTS & Groq Fallback)")
 
 # Enable CORS for frontend and tunnel routing
 app.add_middleware(
@@ -68,7 +131,7 @@ STOP_WORDS = {
     "very", "was", "wasn't", "we", "we'd", "we'll", "we're", "we've", "were",
     "weren't", "what", "what's", "when", "when's", "where", "where's", "which",
     "while", "who", "who's", "whom", "why", "why's", "with", "won't", "would",
-    "wouldn't", "you", "you'd", "you'll", "you're", "you've", "your", "yours",
+    "wouldn me", "you", "you'd", "you'll", "you're", "you've", "your", "yours",
     "yourself", "yourselves", "tell", "please", "find", "show", "search", "hi", "hello"
 }
 
@@ -119,7 +182,7 @@ def broader_meili_search(query_text: str, max_hits: int = 5):
     return hits
 
 def query_ollama_local(prompt_text: str) -> str:
-    """Queries local Ollama using llama3:latest with optimized context options."""
+    """Queries local Ollama using llama3 with a 3-second timeout."""
     url = "http://127.0.0.1:11434/api/generate"
     
     for model_name in ["llama3:latest", "llama3"]:
@@ -142,25 +205,57 @@ def query_ollama_local(prompt_text: str) -> str:
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=60) as response:
+            with urllib.request.urlopen(req, timeout=3) as response:
                 if response.status == 200:
                     result = json.loads(response.read().decode("utf-8"))
                     answer = result.get("response", "").strip()
                     if answer:
                         return format_text_for_natural_speech(answer)
-        except urllib.error.HTTPError as e:
-            print(f"⚠️ Ollama model '{model_name}' HTTP Error: {e.code} - {e.reason}")
         except Exception as e:
-            print(f"⚠️ Ollama query error with '{model_name}': {e}")
+            print(f"⚠️ Ollama unreachable or timed out: {e}")
+            break
             
     return ""
+
+def query_groq_fallback(system_instruction: str, user_prompt: str):
+    """Cloud fallback dynamically retrieving active models from Groq API."""
+    if not groq_client:
+        return "", "GROQ_API_KEY is not set or groq_client failed to initialize."
+    
+    model_name = get_active_groq_model()
+    if not model_name:
+        return "", "No accessible text models found for this Groq API key."
+    
+    try:
+        completion = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": user_prompt}
+            ],
+            model=model_name,
+            max_tokens=150,
+            temperature=0.4
+        )
+        
+        raw_content = completion.choices[0].message.content if completion.choices else None
+        if raw_content:
+            formatted = format_text_for_natural_speech(raw_content)
+            if formatted:
+                return formatted, ""
+                
+        return "", f"Model '{model_name}' returned empty or null content."
+    except Exception as e:
+        err_msg = str(e) or repr(e)
+        return "", err_msg
 
 @app.get("/")
 def read_root():
     return {
         "status": "online", 
         "message": "Tati Voice AI Local Backend Active",
-        "kokoro_tts": tts_pipeline is not None
+        "kokoro_tts": tts_pipeline is not None,
+        "groq_fallback_ready": groq_client is not None,
+        "groq_key_detected": bool(groq_api_key)
     }
 
 @app.post("/search")
@@ -170,10 +265,7 @@ def search_records(req: SearchRequest):
 
 @app.post("/api/tts")
 def generate_local_neural_speech(req: TTSRequest):
-    """
-    Generates 100% offline human-like neural audio using Kokoro-82M.
-    Available Voice Presets: 'af_heart' (Samantha style), 'af_bella', 'af_sarah', 'am_adam', 'am_michael'
-    """
+    """Generates 100% offline human-like neural audio using Kokoro-82M."""
     if tts_pipeline is None:
         raise HTTPException(status_code=500, detail="Kokoro TTS pipeline is not initialized.")
     
@@ -214,6 +306,11 @@ def chat_endpoint(req: ChatRequest):
     hits = broader_meili_search(query_text, max_hits=5)
 
     # 2. Dynamic Prompt Construction
+    system_instructions = (
+        "You are Tati Voice AI, an Earth science research assistant speaking directly to a user. "
+        "Answer the question concisely in exactly 2 warm, clear sentences."
+    )
+    
     if hits:
         context_items = []
         for idx, item in enumerate(hits, 1):
@@ -221,33 +318,33 @@ def chat_endpoint(req: ChatRequest):
             summary = item.get('abstract', item.get('summary', item.get('content', 'No abstract available.')))
             context_items.append(f"Record {idx}:\nTitle: {title}\nSummary: {summary}\n")
         context_str = "\n".join(context_items)
-        system_instructions = (
-            "You are Tati Voice AI, an Earth science research assistant speaking directly to a user. "
-            "Answer the question concisely in exactly 2 warm, clear sentences using the provided context."
-        )
-        full_prompt = f"{system_instructions}\n\nContext:\n{context_str}\n\nUser Question: {query_text}\n\nAnswer:"
+        user_prompt_content = f"Context:\n{context_str}\n\nUser Question: {query_text}\n\nAnswer:"
     else:
-        system_instructions = (
-            "You are Tati Voice AI, an Earth science research assistant speaking directly to a user. "
-            "Answer the question concisely in exactly 2 warm, clear sentences using your general knowledge."
-        )
-        full_prompt = f"{system_instructions}\n\nUser Question: {query_text}\n\nAnswer:"
+        user_prompt_content = f"User Question: {query_text}\n\nAnswer:"
 
-    # 3. Query Local Ollama Engine
+    full_prompt = f"{system_instructions}\n\n{user_prompt_content}"
+
+    # 3. Try Local Ollama Engine First
+    provider = "ollama_local"
     answer = query_ollama_local(full_prompt)
 
-    # 4. Fallback Execution
+    # 4. Fallback to Groq Cloud API if Ollama is Offline/Timed Out
+    groq_error = ""
     if not answer:
-        if hits:
-            first_title = hits[0].get('title', 'Earth Science Record')
-            answer = f"I retrieved academic records regarding {first_title}. Give local Ollama a moment to finalize generation."
+        print("⚡ Ollama unavailable or offline. Routing request to Groq Cloud...")
+        answer, groq_error = query_groq_fallback(system_instructions, user_prompt_content)
+        if answer:
+            provider = "groq_cloud"
         else:
-            answer = f"I captured your query regarding {query_text}. Please verify that 'ollama serve' is running locally."
+            provider = "groq_error"
+            answer = f"Groq Error: {groq_error}"
 
     return {
         "response_text": answer,
         "database_hits": len(hits),
-        "hits": hits
+        "hits": hits,
+        "provider": provider,
+        "diagnostics": {"groq_error": groq_error} if groq_error else {}
     }
 
 if __name__ == "__main__":
