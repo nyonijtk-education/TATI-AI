@@ -11,13 +11,12 @@ const getBaseUrl = () => {
   if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
     return "http://127.0.0.1:8000";
   }
-  // Persistent LocalTunnel Endpoint Fallback
   return "https://tati-voice-ai-backend.loca.lt"; 
 };
 
 const API_BASE_URL = getBaseUrl();
 
-const SUPPORTED_LANGUAGES = {
+export const SUPPORTED_LANGUAGES = {
   EN: "en-US",
   FR: "fr-FR",
   PT: "pt-BR",
@@ -31,43 +30,25 @@ window._currentAudio = null;
 window._currentUtterance = null;
 let activeWakeWordRecognition = null;
 
-// --- Modal & UI Management ---
+// --- Modal Overlay Management ---
 
-function hideWelcomeModal() {
-  // 1. Target by explicit ID/class selectors
-  const selectors = [
-    '#welcome-overlay', '#welcome-modal', '#welcome-screen',
-    '.welcome-modal', '[id*="welcome"]', '.fixed.inset-0', '[class*="z-50"]'
-  ];
+export function hideWelcomeModal() {
+  const initOverlay = document.getElementById('init-overlay');
+  if (initOverlay) {
+    initOverlay.style.setProperty('display', 'none', 'important');
+  }
+
+  // Backup fallback selectors
+  const selectors = ['#welcome-overlay', '#welcome-modal', '.welcome-modal'];
   selectors.forEach(selector => {
     const el = document.querySelector(selector);
-    if (el) {
-      el.style.setProperty('display', 'none', 'important');
-      el.style.setProperty('visibility', 'hidden', 'important');
-      el.style.setProperty('opacity', '0', 'important');
-      el.style.setProperty('pointer-events', 'none', 'important');
-    }
-  });
-
-  // 2. Target any container matching the "INITIALIZE TATI CONSOLE" overlay text
-  const allElements = document.querySelectorAll('div, section, main, overlay');
-  allElements.forEach(el => {
-    if (el.textContent && el.textContent.includes('INITIALIZE TATI CONSOLE') && el.children.length > 0) {
-      let topContainer = el;
-      while (topContainer.parentElement && topContainer.parentElement !== document.body) {
-        topContainer = topContainer.parentElement;
-      }
-      topContainer.style.setProperty('display', 'none', 'important');
-      topContainer.style.setProperty('visibility', 'hidden', 'important');
-      topContainer.style.setProperty('opacity', '0', 'important');
-      topContainer.style.setProperty('pointer-events', 'none', 'important');
-    }
+    if (el) el.style.setProperty('display', 'none', 'important');
   });
 }
 
 function updateStatusUI(statusText, visualState = '') {
-  const statusLabel = document.getElementById('status-label') || document.querySelector('.status-text') || document.querySelector('[id*="status"]');
-  const orb = document.getElementById('orb-button') || document.querySelector('.orb-container') || document.querySelector('[id*="orb"]');
+  const statusLabel = document.getElementById('status-label') || document.querySelector('.status-text');
+  const orb = document.getElementById('orb-button') || document.querySelector('.orb-container');
 
   if (statusLabel) statusLabel.textContent = statusText;
   if (orb && visualState) {
@@ -77,7 +58,7 @@ function updateStatusUI(statusText, visualState = '') {
 
 // --- Audio & Prewarming ---
 
-function prewarmAudio() {
+export function prewarmAudio() {
   if (typeof window !== "undefined" && "speechSynthesis" in window) {
     try {
       window.speechSynthesis.resume();
@@ -86,7 +67,6 @@ function prewarmAudio() {
     } catch (e) {}
   }
   
-  // Unlock Web Audio Context for iOS Safari
   try {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (AudioCtx) {
@@ -96,7 +76,7 @@ function prewarmAudio() {
   } catch (e) {}
 }
 
-function stopAudioPlayback() {
+export function stopAudioPlayback() {
   if (window._currentAudio) {
     window._currentAudio.pause();
     window._currentAudio.currentTime = 0;
@@ -107,9 +87,9 @@ function stopAudioPlayback() {
   }
 }
 
-// --- Voice Recognition & Wake-Word Listener ---
+// --- Voice-to-Wake Listener ---
 
-function startWakeWordListener(onWakeCallback, targetWord = "tati", lang = "en-US") {
+export function startWakeWordListener(onWakeCallback, targetWord = "tati", lang = "en-US") {
   if (!SpeechRecognition) return null;
 
   stopWakeWordListener();
@@ -172,7 +152,7 @@ function startWakeWordListener(onWakeCallback, targetWord = "tati", lang = "en-U
   }
 }
 
-function stopWakeWordListener() {
+export function stopWakeWordListener() {
   if (activeWakeWordRecognition) {
     const rec = activeWakeWordRecognition;
     activeWakeWordRecognition = null;
@@ -200,7 +180,7 @@ function mapVoiceToKokoro(presetName) {
   }
 }
 
-async function speakResponse(
+export async function speakResponse(
   text, 
   onEndCallback = null, 
   preferredVoiceName = "af_heart", 
@@ -279,7 +259,7 @@ function fallbackWebSpeech(text, onEndCallback, lang, rate) {
   window.speechSynthesis.speak(utterance);
 }
 
-function listenToVoice(onResultCallback, onErrorCallback, lang = "en-US") {
+export function listenToVoice(onResultCallback, onErrorCallback, lang = "en-US") {
   if (!SpeechRecognition) {
     const errorMsg = "Speech recognition is not supported in this browser.";
     if (onErrorCallback) onErrorCallback(errorMsg);
@@ -310,7 +290,7 @@ function listenToVoice(onResultCallback, onErrorCallback, lang = "en-US") {
   };
 }
 
-async function sendVoiceQuery(
+export async function sendVoiceQuery(
   transcript, 
   autoSpeak = true, 
   preferredVoiceName = "af_heart", 
@@ -332,7 +312,7 @@ async function sendVoiceQuery(
         "Bypass-Tunnel-Reminder": "true"
       },
       body: JSON.stringify({ 
-        prompt: transcript.trim(), 
+        prompt: transcript.trim(),
         transcript: transcript.trim(), 
         language: lang 
       }),
@@ -372,9 +352,7 @@ async function sendVoiceQuery(
   }
 }
 
-// --- Global Entry Point for Welcome Console Button ---
-
-async function initiateWelcomeConsole() {
+export async function initiateWelcomeConsole() {
   hideWelcomeModal();
   prewarmAudio();
 
@@ -394,43 +372,29 @@ async function initiateWelcomeConsole() {
   );
 }
 
-// Bind all functions to window for global access
-window.SUPPORTED_LANGUAGES = SUPPORTED_LANGUAGES;
+// Global window bindings for legacy inline HTML event handlers
 window.prewarmAudio = prewarmAudio;
 window.stopAudioPlayback = stopAudioPlayback;
 window.startWakeWordListener = startWakeWordListener;
 window.stopWakeWordListener = stopWakeWordListener;
 window.speakResponse = speakResponse;
-window.fallbackWebSpeech = fallbackWebSpeech;
 window.listenToVoice = listenToVoice;
 window.sendVoiceQuery = sendVoiceQuery;
 window.initiateWelcomeConsole = initiateWelcomeConsole;
 window.hideWelcomeModal = hideWelcomeModal;
 
-// DOM Event Listeners
-document.addEventListener('DOMContentLoaded', () => {
-  document.addEventListener('touchstart', prewarmAudio, { passive: true });
-  document.addEventListener('click', prewarmAudio, { passive: true });
+// Automatically bind click handlers on DOM readiness
+if (typeof window !== "undefined") {
+  document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('touchstart', prewarmAudio, { passive: true });
+    document.addEventListener('click', prewarmAudio, { passive: true });
 
-  const startButtons = document.querySelectorAll('button');
-  startButtons.forEach(btn => {
-    if (btn.textContent && btn.textContent.includes('START VOICE CONSOLE')) {
-      btn.addEventListener('click', (e) => {
+    const startBtn = document.getElementById('btn-start-console');
+    if (startBtn) {
+      startBtn.addEventListener('click', (e) => {
         e.preventDefault();
         initiateWelcomeConsole();
       });
     }
   });
-
-  const orb = document.getElementById('orb-button') || document.querySelector('.orb-container');
-  if (orb) {
-    orb.addEventListener('click', () => {
-      hideWelcomeModal();
-      prewarmAudio();
-      const listener = listenToVoice((transcript) => {
-        sendVoiceQuery(transcript);
-      });
-      if (listener) listener.start();
-    });
-  }
-});
+}
