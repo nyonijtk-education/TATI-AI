@@ -11,8 +11,8 @@ const getBaseUrl = () => {
   if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
     return "http://127.0.0.1:8000";
   }
-  // Active Cloudflare Quick Tunnel Endpoint
-  return "https://witnesses-cooked-inn-architectural.trycloudflare.com"; 
+  // Persistent LocalTunnel Endpoint Fallback
+  return "https://tati-voice-ai-backend.loca.lt"; 
 };
 
 const API_BASE_URL = getBaseUrl();
@@ -151,7 +151,10 @@ export async function speakResponse(
   try {
     const response = await fetch(`${API_BASE_URL}/api/tts`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { 
+        "Content-Type": "application/json",
+        "Bypass-Tunnel-Reminder": "true"
+      },
       body: JSON.stringify({ text, voice: kokoroVoice, speed: rate }),
     });
 
@@ -254,7 +257,10 @@ export async function sendVoiceQuery(
   try {
     const response = await fetch(`${API_BASE_URL}/api/chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { 
+        "Content-Type": "application/json",
+        "Bypass-Tunnel-Reminder": "true"
+      },
       body: JSON.stringify({ transcript: transcript.trim(), language: lang }),
     });
 
