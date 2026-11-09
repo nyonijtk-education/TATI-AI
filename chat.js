@@ -1,7 +1,7 @@
 /**
  * Tati Voice AI Platform - chat.js
  * Kokoro-82M Local Neural TTS + Voice-to-Wake ("Hey Tati") + Web Speech API
- * Mobile Safari WebKit Compatible & Echo-Free Architecture
+ * Mobile Safari WebKit Compatible, Echo-Free & Gain-Amplified Architecture
  */
 
 const getBaseUrl = () => {
@@ -27,8 +27,9 @@ const SpeechRecognition =
   typeof window !== "undefined" && 
   (window.SpeechRecognition || window.webkitSpeechRecognition);
 
-// Global persistent audio objects to prevent mobile locks and double playback
+// Global persistent audio objects to prevent mobile locks, double playback, and volume throttling
 window._currentAudio = null;
+window._currentAudioSource = null;
 window._currentUtterance = null;
 window._persistentAudio = (typeof window !== "undefined") ? new Audio() : null;
 window._audioUnlocked = false;
@@ -102,6 +103,13 @@ export function prewarmAudio() {
 export function stopAudioPlayback() {
   isSpeakingState = false;
 
+  if (window._currentAudioSource) {
+    try {
+      window._currentAudioSource.stop();
+      window._currentAudioSource.disconnect();
+    } catch (e) {}
+    window._currentAudioSource = null;
+  }
   if (window._persistentAudio) {
     try {
       window._persistentAudio.pause();
@@ -215,7 +223,7 @@ function mapVoiceToKokoro(presetName) {
   }
 }
 
-// --- Speech Output Pipeline (Echo-Free & iOS Safe) ---
+// --- Speech Output Pipeline (Volume Amplified & Mobile Safe) ---
 
 export async function speakResponse(
   text, 
@@ -254,26 +262,41 @@ export async function speakResponse(
     if (!response.ok) throw new Error(`Kokoro TTS error ${response.status}`);
 
     const blob = await response.blob();
-    const audioUrl = URL.createObjectURL(blob);
+    const arrayBuffer = await blob.arrayBuffer();
 
-    // Reuse persistent audio element to satisfy iOS WebKit autoplay policy
-    const player = window._persistentAudio || new Audio();
-    player.src = audioUrl;
+    // Ensure AudioContext is active
+    const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+    if (!window._audioCtx) {
+      window._audioCtx = new AudioCtxClass();
+    }
+    if (window._audioCtx.state === 'suspended') {
+      await window._audioCtx.resume();
+    }
 
-    player.onended = () => {
-      URL.revokeObjectURL(audioUrl);
+    // Decode PCM stream to Web Audio buffer
+    const audioBuffer = await window._audioCtx.decodeAudioData(arrayBuffer);
+    const source = window._audioCtx.createBufferSource();
+    source.buffer = audioBuffer;
+
+    // --- MOBILE VOLUME AMPLIFIER (GAIN NODE) ---
+    const gainNode = window._audioCtx.createGain();
+    gainNode.gain.value = 1.6; // 1.6x Volume Boost (+60% loudness amplification)
+
+    // Route: Source -> Gain Node -> Device Speakers
+    source.connect(gainNode);
+    gainNode.connect(window._audioCtx.destination);
+
+    window._currentAudioSource = source;
+
+    source.onended = () => {
+      window._currentAudioSource = null;
       handleSpeechCompletion();
     };
 
-    player.onerror = () => {
-      URL.revokeObjectURL(audioUrl);
-      fallbackWebSpeech(text, handleSpeechCompletion, lang, rate);
-    };
-
-    await player.play();
+    source.start(0);
 
   } catch (error) {
-    console.warn("⚠️ Falling back to Web Speech synthesis:", error);
+    console.warn("⚠️ Web Audio amplification failed, falling back to Web Speech synthesis:", error);
     fallbackWebSpeech(text, handleSpeechCompletion, lang, rate);
   }
 }
