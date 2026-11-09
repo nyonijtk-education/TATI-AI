@@ -1,6 +1,7 @@
 /**
  * Tati Voice AI Platform - chat.js
  * Kokoro-82M Local Neural TTS + Voice-to-Wake ("Hey Tati") + Web Speech API
+ * Mobile Safari WebKit Compatible & Echo-Free Architecture
  */
 
 const getBaseUrl = () => {
@@ -26,11 +27,16 @@ const SpeechRecognition =
   typeof window !== "undefined" && 
   (window.SpeechRecognition || window.webkitSpeechRecognition);
 
+// Global persistent audio objects to prevent mobile locks and double playback
 window._currentAudio = null;
 window._currentUtterance = null;
-let activeWakeWordRecognition = null;
+window._persistentAudio = (typeof window !== "undefined") ? new Audio() : null;
+window._audioUnlocked = false;
 
-// --- Modal Overlay Management ---
+let activeWakeWordRecognition = null;
+let isSpeakingState = false;
+
+// --- Modal Overlay & UI Management ---
 
 export function hideWelcomeModal() {
   const initOverlay = document.getElementById('init-overlay');
@@ -38,7 +44,6 @@ export function hideWelcomeModal() {
     initOverlay.style.setProperty('display', 'none', 'important');
   }
 
-  // Backup fallback selectors
   const selectors = ['#welcome-overlay', '#welcome-modal', '.welcome-modal'];
   selectors.forEach(selector => {
     const el = document.querySelector(selector);
@@ -56,17 +61,35 @@ function updateStatusUI(statusText, visualState = '') {
   }
 }
 
-// --- Audio & Prewarming ---
+// --- Mobile Safari Audio Unlocking & Cleanup ---
 
 export function prewarmAudio() {
-  if (typeof window !== "undefined" && "speechSynthesis" in window) {
+  if (typeof window === "undefined") return;
+
+  // 1. Cancel ongoing web speech synthesis
+  if ("speechSynthesis" in window) {
     try {
+      window.speechSynthesis.cancel();
       window.speechSynthesis.resume();
-      const silent = new SpeechSynthesisUtterance("");
-      window.speechSynthesis.speak(silent);
     } catch (e) {}
   }
-  
+
+  // 2. Prime persistent audio element for iOS Safari (requires touch context)
+  if (window._persistentAudio && !window._audioUnlocked) {
+    try {
+      window._persistentAudio.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
+      const playPromise = window._persistentAudio.play();
+      if (playPromise !== undefined) {
+        playPromise.then(() => {
+          window._persistentAudio.pause();
+          window._audioUnlocked = true;
+          console.log("🔊 iOS AudioContext successfully unlocked.");
+        }).catch(() => {});
+      }
+    } catch (e) {}
+  }
+
+  // 3. Resume Web Audio Context
   try {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (AudioCtx) {
@@ -77,20 +100,30 @@ export function prewarmAudio() {
 }
 
 export function stopAudioPlayback() {
+  isSpeakingState = false;
+
+  if (window._persistentAudio) {
+    try {
+      window._persistentAudio.pause();
+      window._persistentAudio.currentTime = 0;
+    } catch (e) {}
+  }
   if (window._currentAudio) {
-    window._currentAudio.pause();
-    window._currentAudio.currentTime = 0;
+    try {
+      window._currentAudio.pause();
+      window._currentAudio.currentTime = 0;
+    } catch (e) {}
     window._currentAudio = null;
   }
   if (typeof window !== "undefined" && "speechSynthesis" in window) {
-    window.speechSynthesis.cancel();
+    try { window.speechSynthesis.cancel(); } catch (e) {}
   }
 }
 
-// --- Voice-to-Wake Listener ---
+// --- Voice Recognition Engine ---
 
 export function startWakeWordListener(onWakeCallback, targetWord = "tati", lang = "en-US") {
-  if (!SpeechRecognition) return null;
+  if (!SpeechRecognition || isSpeakingState) return null;
 
   stopWakeWordListener();
 
@@ -101,6 +134,8 @@ export function startWakeWordListener(onWakeCallback, targetWord = "tati", lang 
     recognition.lang = lang;
 
     recognition.onresult = (event) => {
+      if (isSpeakingState) return;
+
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcript = event.results[i][0].transcript.toLowerCase();
         if (
@@ -125,9 +160,9 @@ export function startWakeWordListener(onWakeCallback, targetWord = "tati", lang 
     };
 
     recognition.onerror = (event) => {
-      if (event.error !== "aborted" && activeWakeWordRecognition) {
+      if (event.error !== "aborted" && activeWakeWordRecognition && !isSpeakingState) {
         setTimeout(() => {
-          if (activeWakeWordRecognition === recognition) {
+          if (activeWakeWordRecognition === recognition && !isSpeakingState) {
             try { recognition.start(); } catch (e) {}
           }
         }, 1000);
@@ -135,7 +170,7 @@ export function startWakeWordListener(onWakeCallback, targetWord = "tati", lang 
     };
 
     recognition.onend = () => {
-      if (activeWakeWordRecognition === recognition) {
+      if (activeWakeWordRecognition === recognition && !isSpeakingState) {
         try { recognition.start(); } catch (e) {}
       }
     };
@@ -180,6 +215,8 @@ function mapVoiceToKokoro(presetName) {
   }
 }
 
+// --- Speech Output Pipeline (Echo-Free & iOS Safe) ---
+
 export async function speakResponse(
   text, 
   onEndCallback = null, 
@@ -187,11 +224,22 @@ export async function speakResponse(
   lang = "en-US",
   rate = 1.0
 ) {
+  // 1. Immediately kill existing speech and release microphone channel for iOS
   stopAudioPlayback();
   stopWakeWordListener();
+  isSpeakingState = true;
   updateStatusUI("TATI SPEAKING", "speaking");
 
   const kokoroVoice = mapVoiceToKokoro(preferredVoiceName);
+
+  const handleSpeechCompletion = () => {
+    isSpeakingState = false;
+    if (onEndCallback) {
+      onEndCallback();
+    } else {
+      startWakeWordListener();
+    }
+  };
 
   try {
     const response = await fetch(`${API_BASE_URL}/api/tts`, {
@@ -207,30 +255,26 @@ export async function speakResponse(
 
     const blob = await response.blob();
     const audioUrl = URL.createObjectURL(blob);
-    const audio = new Audio(audioUrl);
 
-    window._currentAudio = audio;
+    // Reuse persistent audio element to satisfy iOS WebKit autoplay policy
+    const player = window._persistentAudio || new Audio();
+    player.src = audioUrl;
 
-    audio.onended = () => {
+    player.onended = () => {
       URL.revokeObjectURL(audioUrl);
-      window._currentAudio = null;
-      if (onEndCallback) {
-        onEndCallback();
-      } else {
-        startWakeWordListener();
-      }
+      handleSpeechCompletion();
     };
 
-    audio.onerror = () => {
+    player.onerror = () => {
       URL.revokeObjectURL(audioUrl);
-      window._currentAudio = null;
-      fallbackWebSpeech(text, onEndCallback || startWakeWordListener, lang, rate);
+      fallbackWebSpeech(text, handleSpeechCompletion, lang, rate);
     };
 
-    await audio.play();
+    await player.play();
+
   } catch (error) {
     console.warn("⚠️ Falling back to Web Speech synthesis:", error);
-    fallbackWebSpeech(text, onEndCallback || startWakeWordListener, lang, rate);
+    fallbackWebSpeech(text, handleSpeechCompletion, lang, rate);
   }
 }
 
@@ -266,6 +310,7 @@ export function listenToVoice(onResultCallback, onErrorCallback, lang = "en-US")
     return null;
   }
 
+  stopAudioPlayback();
   stopWakeWordListener();
   prewarmAudio();
 
@@ -365,8 +410,6 @@ export async function initiateWelcomeConsole() {
     }
   }
 
-  startWakeWordListener();
-
   speakResponse(
     "Welcome to Tati Voice AI Console. Local Kokoro neural speech engine online. Say Hey Tati or tap the orb to begin."
   );
@@ -383,17 +426,23 @@ window.sendVoiceQuery = sendVoiceQuery;
 window.initiateWelcomeConsole = initiateWelcomeConsole;
 window.hideWelcomeModal = hideWelcomeModal;
 
-// Automatically bind click handlers on DOM readiness
+// Single-execution touch & click binder
 if (typeof window !== "undefined") {
-  document.addEventListener('DOMContentLoaded', () => {
-    document.addEventListener('touchstart', prewarmAudio, { passive: true });
-    document.addEventListener('click', prewarmAudio, { passive: true });
+  const unlockEvents = ['touchstart', 'click'];
+  unlockEvents.forEach(evt => {
+    document.addEventListener(evt, () => prewarmAudio(), { passive: true, once: false });
+  });
 
-    const startBtn = document.getElementById('btn-start-console');
-    if (startBtn) {
-      startBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        initiateWelcomeConsole();
+  document.addEventListener('DOMContentLoaded', () => {
+    const orb = document.getElementById('orb-button') || document.querySelector('.orb-container');
+    if (orb) {
+      orb.addEventListener('click', () => {
+        hideWelcomeModal();
+        prewarmAudio();
+        const listener = listenToVoice((transcript) => {
+          sendVoiceQuery(transcript);
+        });
+        if (listener) listener.start();
       });
     }
   });
