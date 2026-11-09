@@ -1,274 +1,413 @@
-// Complete production-ready chat.js for Tati Voice AI Platform
-const BACKEND_URL = 'https://tati-voice-ai-backend.loca.lt';
+/**
+ * Tati Voice AI Platform - chat.js
+ * Kokoro-82M Local Neural TTS + Voice-to-Wake ("Hey Tati") + Web Speech API
+ */
 
-const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-let audioCtx = null;
-let recognition = null;
-let isProcessing = false;
+const getBaseUrl = () => {
+  if (typeof process !== "undefined" && process.env) {
+    if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+    if (process.env.REACT_APP_API_URL) return process.env.REACT_APP_API_URL;
+  }
+  if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
+    return "http://127.0.0.1:8000";
+  }
+  // Persistent LocalTunnel Endpoint Fallback
+  return "https://tati-voice-ai-backend.loca.lt"; 
+};
 
-// 1. Hide Welcome Overlay Immediately
+const API_BASE_URL = getBaseUrl();
+
+const SUPPORTED_LANGUAGES = {
+  EN: "en-US",
+  FR: "fr-FR",
+  PT: "pt-BR",
+};
+
+const SpeechRecognition = 
+  typeof window !== "undefined" && 
+  (window.SpeechRecognition || window.webkitSpeechRecognition);
+
+window._currentAudio = null;
+window._currentUtterance = null;
+let activeWakeWordRecognition = null;
+let isProcessingQuery = false;
+
+// --- Helper UI & Modal Functions ---
+
 function hideWelcomeModal() {
-    const modalSelectors = [
-        '#welcome-overlay', '#welcome-modal', '#welcome-screen',
-        '.welcome-modal', '[id*="welcome"]', '.fixed.inset-0', '[class*="z-50"]'
-    ];
-    modalSelectors.forEach(selector => {
-        const el = document.querySelector(selector);
-        if (el) {
-            el.style.display = 'none';
-            el.style.visibility = 'hidden';
-            el.style.opacity = '0';
-            el.style.pointerEvents = 'none';
-            el.classList.add('hidden');
+  const selectors = [
+    '#welcome-overlay', '#welcome-modal', '#welcome-screen',
+    '.welcome-modal', '[id*="welcome"]', '.fixed.inset-0', '[class*="z-50"]'
+  ];
+  selectors.forEach(selector => {
+    const el = document.querySelector(selector);
+    if (el) {
+      el.style.display = 'none';
+      el.style.visibility = 'hidden';
+      el.style.opacity = '0';
+      el.style.pointerEvents = 'none';
+      el.classList.add('hidden');
+    }
+  });
+}
+
+function updateStatusUI(statusText, visualState = '') {
+  const statusLabel = document.getElementById('status-label') || document.querySelector('.status-text') || document.querySelector('[id*="status"]');
+  const orb = document.getElementById('orb-button') || document.querySelector('.orb-container') || document.querySelector('[id*="orb"]');
+
+  if (statusLabel) statusLabel.textContent = statusText;
+  if (orb && visualState) {
+    orb.setAttribute('data-state', visualState);
+  }
+}
+
+// --- Audio & Wake-Word Core ---
+
+function prewarmAudio() {
+  if (typeof window !== "undefined" && "speechSynthesis" in window) {
+    window.speechSynthesis.resume();
+    const silent = new SpeechSynthesisUtterance("");
+    window.speechSynthesis.speak(silent);
+  }
+  
+  // Unlock Web Audio Context for iOS Safari
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (AudioCtx) {
+    if (!window._audioCtx) window._audioCtx = new AudioCtx();
+    if (window._audioCtx.state === 'suspended') window._audioCtx.resume();
+  }
+}
+
+function stopAudioPlayback() {
+  if (window._currentAudio) {
+    window._currentAudio.pause();
+    window._currentAudio.currentTime = 0;
+    window._currentAudio = null;
+  }
+  if (typeof window !== "undefined" && "speechSynthesis" in window) {
+    window.speechSynthesis.cancel();
+  }
+}
+
+function startWakeWordListener(onWakeCallback, targetWord = "tati", lang = "en-US") {
+  if (!SpeechRecognition) return null;
+
+  stopWakeWordListener();
+
+  try {
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = lang;
+
+    recognition.onresult = (event) => {
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript.toLowerCase();
+        if (
+          transcript.includes(targetWord.toLowerCase()) || 
+          transcript.includes("hey tati") || 
+          transcript.includes("ok tati") ||
+          transcript.includes("tati")
+        ) {
+          console.log("⚡ Wake word detected:", transcript);
+          stopWakeWordListener();
+          if (onWakeCallback) {
+            onWakeCallback(transcript);
+          } else {
+            const queryText = transcript.replace(/.*(?:hey tati|ok tati|tati)/i, '').trim();
+            if (queryText.length > 0) {
+              sendVoiceQuery(queryText);
+            }
+          }
+          break;
         }
-    });
-}
-
-// 2. Web Audio Unlocker for iOS Safari & Desktop Browsers
-function unlockIOSAudio() {
-    try {
-        if (!audioCtx) {
-            audioCtx = new AudioContextClass();
-        }
-        if (audioCtx.state === 'suspended') {
-            audioCtx.resume();
-        }
-        const buffer = audioCtx.createBuffer(1, 1, 22050);
-        const source = audioCtx.createBufferSource();
-        source.buffer = buffer;
-        source.connect(audioCtx.destination);
-        source.start(0);
-    } catch (e) {
-        console.log("Audio unlock:", e);
-    }
-}
-
-// 3. User-Gesture Microphone Permission Trigger
-async function requestMobileMicrophone() {
-    try {
-        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            stream.getTracks().forEach(track => track.stop());
-            return true;
-        }
-        return true;
-    } catch (err) {
-        console.error("Microphone Access Error:", err);
-        return false;
-    }
-}
-
-// 4. UI State Updater
-function updateUI(statusText, visualState = '') {
-    const statusLabel = document.getElementById('status-label') || document.querySelector('.status-text') || document.querySelector('[id*="status"]');
-    const orb = document.getElementById('orb-button') || document.querySelector('.orb-container') || document.querySelector('[id*="orb"]');
-
-    if (statusLabel) statusLabel.textContent = statusText;
-    if (orb && visualState) {
-        orb.setAttribute('data-state', visualState);
-    }
-}
-
-// 5. Browser Web Speech Synthesis Fallback
-function speakFallback(text, onComplete) {
-    if (!('speechSynthesis' in window)) {
-        if (onComplete) onComplete();
-        return;
-    }
-    try {
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = 1.0;
-        utterance.pitch = 1.0;
-        utterance.onend = () => { if (onComplete) onComplete(); };
-        utterance.onerror = (err) => {
-            console.error("SpeechSynthesis error:", err);
-            if (onComplete) onComplete();
-        };
-        window.speechSynthesis.speak(utterance);
-    } catch (e) {
-        if (onComplete) onComplete();
-    }
-}
-
-// 6. Global speakResponse Function (Required by index.html line 582)
-async function speakResponse(text, onComplete) {
-    updateUI("TATI SPEAKING", "speaking");
-    try {
-        const ttsResponse = await fetch(`${BACKEND_URL}/api/tts`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'bypass-tunnel-reminder': 'true'
-            },
-            body: JSON.stringify({ text: text })
-        });
-
-        if (!ttsResponse.ok) throw new Error(`TTS Status ${ttsResponse.status}`);
-
-        const audioBlob = await ttsResponse.blob();
-        const audioUrl = URL.createObjectURL(audioBlob);
-        const audio = new Audio(audioUrl);
-
-        audio.onended = () => {
-            URL.revokeObjectURL(audioUrl);
-            if (onComplete) onComplete();
-        };
-
-        audio.onerror = () => {
-            speakFallback(text, onComplete);
-        };
-
-        await audio.play();
-
-    } catch (err) {
-        console.warn("Backend TTS fetch failed, using Web Speech fallback:", err);
-        speakFallback(text, onComplete);
-    }
-}
-
-// 7. End-to-End Voice Query Pipeline
-async function sendVoiceQuery(queryText) {
-    if (isProcessing) return;
-    isProcessing = true;
-
-    unlockIOSAudio();
-    updateUI("THINKING...", "thinking");
-
-    if (recognition) {
-        try { recognition.stop(); } catch (e) {}
-    }
-
-    const resumeListener = () => {
-        isProcessing = false;
-        updateUI("LISTENING", "listening");
-        if (recognition) {
-            try { recognition.start(); } catch (e) {}
-        }
+      }
     };
 
-    try {
-        console.log("Sending query:", queryText);
+    recognition.onerror = (event) => {
+      if (event.error !== "aborted" && activeWakeWordRecognition) {
+        setTimeout(() => {
+          if (activeWakeWordRecognition === recognition) {
+            try { recognition.start(); } catch (e) {}
+          }
+        }, 1000);
+      }
+    };
 
-        const chatResponse = await fetch(`${BACKEND_URL}/api/chat`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'bypass-tunnel-reminder': 'true'
-            },
-            body: JSON.stringify({ prompt: queryText })
-        });
+    recognition.onend = () => {
+      if (activeWakeWordRecognition === recognition) {
+        try { recognition.start(); } catch (e) {}
+      }
+    };
 
-        if (!chatResponse.ok) throw new Error(`Chat HTTP Error: ${chatResponse.status}`);
+    recognition.start();
+    activeWakeWordRecognition = recognition;
+    console.log(`👂 Voice-to-Wake active. Listening for "Hey ${targetWord}"...`);
+    updateStatusUI("LISTENING", "listening");
 
-        const chatData = await chatResponse.json();
-        const replyText = chatData.response || chatData.reply || "No response received.";
-
-        await speakResponse(replyText, resumeListener);
-
-    } catch (err) {
-        console.error("Pipeline query error:", err);
-        updateUI("ERROR OCCURRED", "error");
-        speakFallback("Sorry, I could not reach the backend server.", resumeListener);
-    }
+    return { stop: stopWakeWordListener };
+  } catch (err) {
+    console.warn("Could not start Voice-to-Wake engine:", err);
+    return null;
+  }
 }
 
-// 8. Speech Recognition Listener
-function initSpeechRecognition() {
-    const SpeechRecognitionClass = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognitionClass) {
-        console.warn("Speech recognition unsupported in this browser.");
-        updateUI("SPEECH API UNSUPPORTED", "error");
-        return;
-    }
-
-    try {
-        recognition = new SpeechRecognitionClass();
-        recognition.continuous = true;
-        recognition.interimResults = false;
-        recognition.lang = 'en-US';
-
-        recognition.onstart = () => {
-            console.log('Voice-to-Wake active. Listening for "Hey Tati"...');
-            if (!isProcessing) updateUI("LISTENING", "listening");
-        };
-
-        recognition.onresult = (event) => {
-            if (isProcessing) return;
-
-            const lastIndex = event.results.length - 1;
-            const transcript = event.results[lastIndex][0].transcript.trim().toLowerCase();
-            console.log("Speech input captured:", transcript);
-
-            if (transcript.includes("hey tati") || transcript.includes("tati")) {
-                const queryText = transcript.replace(/.*(?:hey tati|tati)/i, '').trim();
-                if (queryText.length > 0) {
-                    sendVoiceQuery(queryText);
-                } else {
-                    updateUI("SAY YOUR QUERY...", "listening");
-                }
-            } else if (transcript.length > 2) {
-                sendVoiceQuery(transcript);
-            }
-        };
-
-        recognition.onerror = (event) => {
-            console.warn("Speech listener error:", event.error);
-        };
-
-        recognition.onend = () => {
-            if (!isProcessing) {
-                try { recognition.start(); } catch (e) {}
-            }
-        };
-    } catch (e) {
-        console.error("Error initializing recognition:", e);
-    }
+function stopWakeWordListener() {
+  if (activeWakeWordRecognition) {
+    const rec = activeWakeWordRecognition;
+    activeWakeWordRecognition = null;
+    try { rec.stop(); } catch (e) {}
+  }
 }
 
-// 9. Welcome Console Handler called by button in index.html
+function mapVoiceToKokoro(presetName) {
+  switch (presetName) {
+    case "samantha":
+    case "af_heart":
+      return "af_heart";
+    case "af_bella":
+      return "af_bella";
+    case "af_sarah":
+    case "female_uk":
+      return "af_sarah";
+    case "am_adam":
+    case "male_us":
+      return "am_adam";
+    case "am_michael":
+      return "am_michael";
+    default:
+      return "af_heart";
+  }
+}
+
+async function speakResponse(
+  text, 
+  onEndCallback = null, 
+  preferredVoiceName = "af_heart", 
+  lang = "en-US",
+  rate = 1.0
+) {
+  stopAudioPlayback();
+  stopWakeWordListener();
+  updateStatusUI("TATI SPEAKING", "speaking");
+
+  const kokoroVoice = mapVoiceToKokoro(preferredVoiceName);
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/tts`, {
+      method: "POST",
+      headers: { 
+        "Content-Type": "application/json",
+        "Bypass-Tunnel-Reminder": "true"
+      },
+      body: JSON.stringify({ text, voice: kokoroVoice, speed: rate }),
+    });
+
+    if (!response.ok) throw new Error(`Kokoro TTS error ${response.status}`);
+
+    const blob = await response.blob();
+    const audioUrl = URL.createObjectURL(blob);
+    const audio = new Audio(audioUrl);
+
+    window._currentAudio = audio;
+
+    audio.onended = () => {
+      URL.revokeObjectURL(audioUrl);
+      window._currentAudio = null;
+      if (onEndCallback) {
+        onEndCallback();
+      } else {
+        startWakeWordListener();
+      }
+    };
+
+    audio.onerror = () => {
+      URL.revokeObjectURL(audioUrl);
+      window._currentAudio = null;
+      fallbackWebSpeech(text, onEndCallback || startWakeWordListener, lang, rate);
+    };
+
+    await audio.play();
+  } catch (error) {
+    console.warn("⚠️ Falling back to Web Speech synthesis:", error);
+    fallbackWebSpeech(text, onEndCallback || startWakeWordListener, lang, rate);
+  }
+}
+
+function fallbackWebSpeech(text, onEndCallback, lang, rate) {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+    if (onEndCallback) onEndCallback();
+    return;
+  }
+
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.resume();
+
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = rate;
+  utterance.lang = lang;
+
+  const voices = window.speechSynthesis.getVoices();
+  if (voices.length > 0) {
+    utterance.voice = voices.find(v => v.lang.startsWith(lang.split('-')[0])) || voices[0];
+  }
+
+  utterance.onend = () => { if (onEndCallback) onEndCallback(); };
+  utterance.onerror = () => { if (onEndCallback) onEndCallback(); };
+
+  window._currentUtterance = utterance;
+  window.speechSynthesis.speak(utterance);
+}
+
+function listenToVoice(onResultCallback, onErrorCallback, lang = "en-US") {
+  if (!SpeechRecognition) {
+    const errorMsg = "Speech recognition is not supported in this browser.";
+    if (onErrorCallback) onErrorCallback(errorMsg);
+    return null;
+  }
+
+  stopWakeWordListener();
+  prewarmAudio();
+
+  const recognition = new SpeechRecognition();
+  recognition.continuous = false;
+  recognition.interimResults = false;
+  recognition.lang = lang;
+
+  recognition.onresult = (event) => {
+    const transcript = event.results[0][0].transcript;
+    if (onResultCallback) onResultCallback(transcript);
+  };
+
+  recognition.onerror = (event) => {
+    console.error(`Speech recognition error (${lang}):`, event.error);
+    if (onErrorCallback) onErrorCallback(event.error);
+  };
+
+  return {
+    start: () => recognition.start(),
+    stop: () => recognition.stop(),
+  };
+}
+
+async function sendVoiceQuery(
+  transcript, 
+  autoSpeak = true, 
+  preferredVoiceName = "af_heart", 
+  lang = "en-US", 
+  rate = 1.0
+) {
+  if (!transcript || !transcript.trim()) {
+    throw new Error("Voice transcript cannot be empty.");
+  }
+
+  if (autoSpeak) prewarmAudio();
+  updateStatusUI("THINKING...", "thinking");
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/chat`, {
+      method: "POST",
+      headers: { 
+        "Content-Type": "application/json",
+        "Bypass-Tunnel-Reminder": "true"
+      },
+      body: JSON.stringify({ 
+        prompt: transcript.trim(), 
+        transcript: transcript.trim(), 
+        language: lang 
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `Server error code ${response.status}`);
+    }
+
+    const data = await response.json();
+    const responseText = data.response_text || data.response || data.reply || "";
+
+    // Log active execution provider (ollama_local vs groq_cloud)
+    if (data.provider === "groq_cloud") {
+      console.log("⚡ Fallback Active: Query processed via Groq Cloud.");
+    } else if (data.provider === "ollama_local") {
+      console.log("🟢 Primary Active: Query processed locally via Ollama.");
+    }
+
+    if (autoSpeak && responseText) {
+      speakResponse(responseText, null, preferredVoiceName, lang, rate);
+    }
+
+    return {
+      responseText: responseText,
+      databaseHits: data.database_hits,
+      hits: data.hits || [],
+      provider: data.provider || "unknown"
+    };
+  } catch (error) {
+    console.error("Error connecting to Tati Backend:", error);
+    updateStatusUI("ERROR OCCURRED", "error");
+    if (autoSpeak) {
+      speakResponse("Sorry, I could not reach the Tati backend server.", null, preferredVoiceName, lang, rate);
+    }
+    throw error;
+  }
+}
+
+// --- Window & HTML Modal Integration Bridge ---
+
 async function initiateWelcomeConsole() {
-    hideWelcomeModal();
-    unlockIOSAudio();
-    
-    await requestMobileMicrophone();
+  hideWelcomeModal();
+  prewarmAudio();
 
-    if (!recognition) {
-        initSpeechRecognition();
-    }
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
     try {
-        if (recognition) recognition.start();
-    } catch (e) {}
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(track => track.stop());
+    } catch (e) {
+      console.warn("Microphone access prompt error:", e);
+    }
+  }
 
-    speakResponse("Welcome to Tati Voice AI Console. Local Kokoro neural speech engine online. Say Hey Tati or tap the orb to begin.");
+  startWakeWordListener();
+
+  speakResponse(
+    "Welcome to Tati Voice AI Console. Local Kokoro neural speech engine online. Say Hey Tati or tap the orb to begin."
+  );
 }
 
-// 10. Bind to Window Scope for Inline HTML Handlers
+// Bind functions to global window object
+window.SUPPORTED_LANGUAGES = SUPPORTED_LANGUAGES;
+window.prewarmAudio = prewarmAudio;
+window.stopAudioPlayback = stopAudioPlayback;
+window.startWakeWordListener = startWakeWordListener;
+window.stopWakeWordListener = stopWakeWordListener;
 window.speakResponse = speakResponse;
+window.listenToVoice = listenToVoice;
 window.sendVoiceQuery = sendVoiceQuery;
 window.initiateWelcomeConsole = initiateWelcomeConsole;
 window.hideWelcomeModal = hideWelcomeModal;
 
-// 11. Event Listeners
+// Event attachment for user clicks
 document.addEventListener('DOMContentLoaded', () => {
-    document.addEventListener('touchstart', unlockIOSAudio, { passive: true });
-    document.addEventListener('click', unlockIOSAudio, { passive: true });
+  document.addEventListener('touchstart', prewarmAudio, { passive: true });
+  document.addEventListener('click', prewarmAudio, { passive: true });
 
-    const startBtn = document.querySelector('button[onclick*="initiateWelcomeConsole"]') || document.querySelector('button');
-    if (startBtn) {
-        startBtn.addEventListener('click', () => {
-            initiateWelcomeConsole();
-        });
-    }
+  const startBtn = document.querySelector('button[onclick*="initiateWelcomeConsole"]') || document.querySelector('button');
+  if (startBtn) {
+    startBtn.addEventListener('click', () => {
+      initiateWelcomeConsole();
+    });
+  }
 
-    const orb = document.getElementById('orb-button') || document.querySelector('.orb-container');
-    if (orb) {
-        orb.addEventListener('click', async () => {
-            hideWelcomeModal();
-            unlockIOSAudio();
-            await requestMobileMicrophone();
-            if (!recognition) initSpeechRecognition();
-            try { recognition.start(); } catch (e) {}
-        });
-    }
+  const orb = document.getElementById('orb-button') || document.querySelector('.orb-container');
+  if (orb) {
+    orb.addEventListener('click', () => {
+      hideWelcomeModal();
+      prewarmAudio();
+      const listener = listenToVoice((transcript) => {
+        sendVoiceQuery(transcript);
+      });
+      if (listener) listener.start();
+    });
+  }
 });
