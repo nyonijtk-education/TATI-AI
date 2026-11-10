@@ -1,7 +1,7 @@
 /**
  * Tati Voice AI Platform - chat.js
- * Kokoro-82M Local Neural TTS + Voice-to-Wake ("Hey Tati") + Web Speech API
- * Mobile Safari WebKit Compatible, Echo-Free & Gain-Amplified Architecture
+ * 100% Offline Compatible: Local Whisper STT + Kokoro-82M TTS + Ollama LLM
+ * Features: Fast RMS VAD Silence Detection (0.8s Auto-Submit) & Resilient Offline Handler
  */
 
 const getBaseUrl = () => {
@@ -27,7 +27,7 @@ const SpeechRecognition =
   typeof window !== "undefined" && 
   (window.SpeechRecognition || window.webkitSpeechRecognition);
 
-// Global persistent audio objects to prevent mobile locks, double playback, and volume throttling
+// Global persistent state
 window._currentAudio = null;
 window._currentAudioSource = null;
 window._currentUtterance = null;
@@ -36,8 +36,29 @@ window._audioUnlocked = false;
 
 let activeWakeWordRecognition = null;
 let isSpeakingState = false;
+let isRecordingState = false;
+let activeMediaRecorder = null;
+let recordedChunks = [];
+let recordingTimeout = null;
 
-// --- Modal Overlay & UI Management ---
+// Audio VAD (Voice Activity Detection) State
+let vadAudioCtx = null;
+let vadAnalyser = null;
+let vadCheckInterval = null;
+
+function cleanupVAD() {
+  if (vadCheckInterval) {
+    clearInterval(vadCheckInterval);
+    vadCheckInterval = null;
+  }
+  if (vadAudioCtx) {
+    try { vadAudioCtx.close(); } catch (e) {}
+    vadAudioCtx = null;
+  }
+  vadAnalyser = null;
+}
+
+// --- Modal Overlay & UI ---
 
 export function hideWelcomeModal() {
   const initOverlay = document.getElementById('init-overlay');
@@ -62,12 +83,11 @@ function updateStatusUI(statusText, visualState = '') {
   }
 }
 
-// --- Mobile Safari Audio Unlocking & Cleanup ---
+// --- Audio Unlocking & Cleanup ---
 
 export function prewarmAudio() {
   if (typeof window === "undefined") return;
 
-  // 1. Cancel ongoing web speech synthesis
   if ("speechSynthesis" in window) {
     try {
       window.speechSynthesis.cancel();
@@ -75,7 +95,6 @@ export function prewarmAudio() {
     } catch (e) {}
   }
 
-  // 2. Prime persistent audio element for iOS Safari (requires touch context)
   if (window._persistentAudio && !window._audioUnlocked) {
     try {
       window._persistentAudio.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
@@ -90,7 +109,6 @@ export function prewarmAudio() {
     } catch (e) {}
   }
 
-  // 3. Resume Web Audio Context
   try {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (AudioCtx) {
@@ -128,10 +146,10 @@ export function stopAudioPlayback() {
   }
 }
 
-// --- Voice Recognition Engine ---
+// --- Voice Recognition Engine (Cloud Guarded with Offline Handling) ---
 
 export function startWakeWordListener(onWakeCallback, targetWord = "tati", lang = "en-US") {
-  if (!SpeechRecognition || isSpeakingState) return null;
+  if (!SpeechRecognition || isSpeakingState || isRecordingState) return null;
 
   stopWakeWordListener();
 
@@ -142,7 +160,7 @@ export function startWakeWordListener(onWakeCallback, targetWord = "tati", lang 
     recognition.lang = lang;
 
     recognition.onresult = (event) => {
-      if (isSpeakingState) return;
+      if (isSpeakingState || isRecordingState) return;
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcript = event.results[i][0].transcript.toLowerCase();
@@ -160,6 +178,8 @@ export function startWakeWordListener(onWakeCallback, targetWord = "tati", lang 
             const queryText = transcript.replace(/.*(?:hey tati|ok tati|tati)/i, '').trim();
             if (queryText.length > 0) {
               sendVoiceQuery(queryText);
+            } else {
+              listenToVoice((text) => sendVoiceQuery(text));
             }
           }
           break;
@@ -168,17 +188,23 @@ export function startWakeWordListener(onWakeCallback, targetWord = "tati", lang 
     };
 
     recognition.onerror = (event) => {
+      if (event.error === "network") {
+        console.warn("⚠️ Offline mode: Cloud SpeechRecognition unavailable. Tap orb for local Whisper STT.");
+        stopWakeWordListener();
+        updateStatusUI("OFFLINE - TAP ORB TO TALK", "idle");
+        return;
+      }
       if (event.error !== "aborted" && activeWakeWordRecognition && !isSpeakingState) {
         setTimeout(() => {
           if (activeWakeWordRecognition === recognition && !isSpeakingState) {
             try { recognition.start(); } catch (e) {}
           }
-        }, 1000);
+        }, 1500);
       }
     };
 
     recognition.onend = () => {
-      if (activeWakeWordRecognition === recognition && !isSpeakingState) {
+      if (activeWakeWordRecognition === recognition && !isSpeakingState && !isRecordingState) {
         try { recognition.start(); } catch (e) {}
       }
     };
@@ -203,6 +229,184 @@ export function stopWakeWordListener() {
   }
 }
 
+// --- 100% Offline Local MediaRecorder STT with Fast RMS VAD ---
+
+export function stopLocalWhisperRecording() {
+  cleanupVAD();
+  if (activeMediaRecorder && activeMediaRecorder.state === "recording") {
+    console.log("🛑 Stopping microphone recording...");
+    if (recordingTimeout) clearTimeout(recordingTimeout);
+    try {
+      activeMediaRecorder.requestData();
+    } catch (e) {}
+    activeMediaRecorder.stop();
+    return true;
+  }
+  return false;
+}
+
+async function startLocalWhisperRecording(onResultCallback, onErrorCallback) {
+  if (stopLocalWhisperRecording()) return;
+
+  try {
+    isRecordingState = true;
+    updateStatusUI("LISTENING...", "listening");
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    activeMediaRecorder = new MediaRecorder(stream);
+    recordedChunks = [];
+
+    // RMS Audio VAD Setup
+    const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+    vadAudioCtx = new AudioCtxClass();
+    const sourceNode = vadAudioCtx.createMediaStreamSource(stream);
+    vadAnalyser = vadAudioCtx.createAnalyser();
+    vadAnalyser.fftSize = 1024;
+    sourceNode.connect(vadAnalyser);
+
+    const timeDomainData = new Float32Array(vadAnalyser.fftSize);
+    let speechDetected = false;
+    let silenceStart = null;
+    const RMS_SPEECH_THRESHOLD = 0.025; // Filters ambient noise floor
+    const FAST_SILENCE_MS = 800;        // Auto-submits 0.8s after speech ends
+
+    vadCheckInterval = setInterval(() => {
+      if (!isRecordingState || !vadAnalyser) return;
+      
+      vadAnalyser.getFloatTimeDomainData(timeDomainData);
+      let sumSquares = 0;
+      for (let i = 0; i < timeDomainData.length; i++) {
+        sumSquares += timeDomainData[i] * timeDomainData[i];
+      }
+      const rms = Math.sqrt(sumSquares / timeDomainData.length);
+
+      if (rms > RMS_SPEECH_THRESHOLD) {
+        if (!speechDetected) {
+          speechDetected = true;
+          updateStatusUI("RECORDING SPEECH...", "listening");
+        }
+        silenceStart = null;
+      } else if (speechDetected) {
+        if (!silenceStart) {
+          silenceStart = Date.now();
+        } else if (Date.now() - silenceStart > FAST_SILENCE_MS) {
+          console.log("⚡ Speech complete (0.8s silence detected). Auto-submitting to Whisper...");
+          stopLocalWhisperRecording();
+        }
+      }
+    }, 40);
+
+    activeMediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) recordedChunks.push(e.data);
+    };
+
+    activeMediaRecorder.onstop = async () => {
+      isRecordingState = false;
+      cleanupVAD();
+      if (recordingTimeout) clearTimeout(recordingTimeout);
+      stream.getTracks().forEach(t => t.stop());
+
+      if (recordedChunks.length === 0) {
+        updateStatusUI("NO AUDIO DETECTED", "idle");
+        return;
+      }
+
+      const audioBlob = new Blob(recordedChunks, { type: 'audio/webm' });
+      const formData = new FormData();
+      formData.append('file', audioBlob, 'speech.webm');
+
+      updateStatusUI("TRANSCRIBING...", "thinking");
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/stt`, {
+          method: "POST",
+          headers: { "Bypass-Tunnel-Reminder": "true" },
+          body: formData
+        });
+
+        if (!response.ok) throw new Error(`Offline STT Status ${response.status}`);
+
+        const data = await response.json();
+        if (data.transcript && data.transcript.trim()) {
+          console.log("📝 Offline STT Transcript:", data.transcript);
+          if (onResultCallback) onResultCallback(data.transcript);
+        } else {
+          if (onErrorCallback) onErrorCallback("No speech detected.");
+          updateStatusUI("NO SPEECH DETECTED", "idle");
+        }
+      } catch (err) {
+        console.error("Local Whisper STT error:", err);
+        if (onErrorCallback) onErrorCallback("Offline STT failed.");
+        updateStatusUI("STT ERROR", "error");
+      }
+    };
+
+    activeMediaRecorder.start(100);
+
+    // Hard fallback cap at 10 seconds
+    recordingTimeout = setTimeout(() => {
+      stopLocalWhisperRecording();
+    }, 10000);
+
+  } catch (err) {
+    console.error("Microphone recording error:", err);
+    isRecordingState = false;
+    cleanupVAD();
+    if (onErrorCallback) onErrorCallback("Microphone permission required.");
+    updateStatusUI("MIC ERROR", "error");
+  }
+}
+
+export function listenToVoice(onResultCallback, onErrorCallback, lang = "en-US") {
+  stopAudioPlayback();
+  stopWakeWordListener();
+  prewarmAudio();
+
+  const localStop = () => stopLocalWhisperRecording();
+
+  if (isRecordingState) {
+    stopLocalWhisperRecording();
+    return { start: () => {}, stop: localStop };
+  }
+
+  if (!navigator.onLine || !SpeechRecognition) {
+    startLocalWhisperRecording(onResultCallback, onErrorCallback);
+    return { start: () => {}, stop: localStop };
+  }
+
+  const recognition = new SpeechRecognition();
+  recognition.continuous = false;
+  recognition.interimResults = false;
+  recognition.lang = lang;
+
+  recognition.onresult = (event) => {
+    const transcript = event.results[0][0].transcript;
+    if (onResultCallback) onResultCallback(transcript);
+  };
+
+  recognition.onerror = (event) => {
+    console.warn(`Speech recognition error (${event.error}). Switching to local offline Whisper STT...`);
+    startLocalWhisperRecording(onResultCallback, onErrorCallback);
+  };
+
+  try {
+    recognition.start();
+    updateStatusUI("LISTENING...", "listening");
+  } catch (e) {
+    startLocalWhisperRecording(onResultCallback, onErrorCallback);
+  }
+
+  return {
+    start: () => { try { recognition.start(); } catch (e) {} },
+    stop: () => { 
+      try { recognition.stop(); } catch (e) {} 
+      stopLocalWhisperRecording();
+    }
+  };
+}
+
+// --- Speech Output Pipeline ---
+
 function mapVoiceToKokoro(presetName) {
   switch (presetName) {
     case "samantha":
@@ -223,8 +427,6 @@ function mapVoiceToKokoro(presetName) {
   }
 }
 
-// --- Speech Output Pipeline (Volume Amplified & Mobile Safe) ---
-
 export async function speakResponse(
   text, 
   onEndCallback = null, 
@@ -232,7 +434,6 @@ export async function speakResponse(
   lang = "en-US",
   rate = 1.0
 ) {
-  // 1. Immediately kill existing speech and release microphone channel for iOS
   stopAudioPlayback();
   stopWakeWordListener();
   isSpeakingState = true;
@@ -264,7 +465,6 @@ export async function speakResponse(
     const blob = await response.blob();
     const arrayBuffer = await blob.arrayBuffer();
 
-    // Ensure AudioContext is active
     const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
     if (!window._audioCtx) {
       window._audioCtx = new AudioCtxClass();
@@ -273,16 +473,13 @@ export async function speakResponse(
       await window._audioCtx.resume();
     }
 
-    // Decode PCM stream to Web Audio buffer
     const audioBuffer = await window._audioCtx.decodeAudioData(arrayBuffer);
     const source = window._audioCtx.createBufferSource();
     source.buffer = audioBuffer;
 
-    // --- MOBILE VOLUME AMPLIFIER (GAIN NODE) ---
     const gainNode = window._audioCtx.createGain();
-    gainNode.gain.value = 1.6; // 1.6x Volume Boost (+60% loudness amplification)
+    gainNode.gain.value = 1.6;
 
-    // Route: Source -> Gain Node -> Device Speakers
     source.connect(gainNode);
     gainNode.connect(window._audioCtx.destination);
 
@@ -326,37 +523,7 @@ function fallbackWebSpeech(text, onEndCallback, lang, rate) {
   window.speechSynthesis.speak(utterance);
 }
 
-export function listenToVoice(onResultCallback, onErrorCallback, lang = "en-US") {
-  if (!SpeechRecognition) {
-    const errorMsg = "Speech recognition is not supported in this browser.";
-    if (onErrorCallback) onErrorCallback(errorMsg);
-    return null;
-  }
-
-  stopAudioPlayback();
-  stopWakeWordListener();
-  prewarmAudio();
-
-  const recognition = new SpeechRecognition();
-  recognition.continuous = false;
-  recognition.interimResults = false;
-  recognition.lang = lang;
-
-  recognition.onresult = (event) => {
-    const transcript = event.results[0][0].transcript;
-    if (onResultCallback) onResultCallback(transcript);
-  };
-
-  recognition.onerror = (event) => {
-    console.error(`Speech recognition error (${lang}):`, event.error);
-    if (onErrorCallback) onErrorCallback(event.error);
-  };
-
-  return {
-    start: () => recognition.start(),
-    stop: () => recognition.stop(),
-  };
-}
+// --- Query Pipeline ---
 
 export async function sendVoiceQuery(
   transcript, 
@@ -438,18 +605,18 @@ export async function initiateWelcomeConsole() {
   );
 }
 
-// Global window bindings for legacy inline HTML event handlers
+// Global window bindings
 window.prewarmAudio = prewarmAudio;
 window.stopAudioPlayback = stopAudioPlayback;
 window.startWakeWordListener = startWakeWordListener;
 window.stopWakeWordListener = stopWakeWordListener;
+window.stopLocalWhisperRecording = stopLocalWhisperRecording;
 window.speakResponse = speakResponse;
 window.listenToVoice = listenToVoice;
 window.sendVoiceQuery = sendVoiceQuery;
 window.initiateWelcomeConsole = initiateWelcomeConsole;
 window.hideWelcomeModal = hideWelcomeModal;
 
-// Single-execution touch & click binder
 if (typeof window !== "undefined") {
   const unlockEvents = ['touchstart', 'click'];
   unlockEvents.forEach(evt => {
@@ -462,10 +629,14 @@ if (typeof window !== "undefined") {
       orb.addEventListener('click', () => {
         hideWelcomeModal();
         prewarmAudio();
-        const listener = listenToVoice((transcript) => {
-          sendVoiceQuery(transcript);
-        });
-        if (listener) listener.start();
+
+        if (isRecordingState) {
+          stopLocalWhisperRecording();
+        } else {
+          listenToVoice((transcript) => {
+            sendVoiceQuery(transcript);
+          });
+        }
       });
     }
   });
