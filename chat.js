@@ -689,27 +689,52 @@ window.sendVoiceQuery = sendVoiceQuery;
 window.initiateWelcomeConsole = initiateWelcomeConsole;
 window.hideWelcomeModal = hideWelcomeModal;
 
+function bindUIListeners() {
+  const startBtn = document.getElementById('start-btn') || 
+                   document.querySelector('button') || 
+                   document.getElementById('orb-button');
+
+  if (startBtn) {
+    startBtn.addEventListener('click', () => {
+      hideWelcomeModal();
+      prewarmAudio();
+
+      if (isRecordingState) {
+        stopLocalWhisperRecording();
+      } else {
+        listenToVoice((transcript) => {
+          sendVoiceQuery(transcript);
+        });
+      }
+    });
+  }
+
+  const orb = document.getElementById('orb-button') || document.querySelector('.orb-container');
+  if (orb && orb !== startBtn) {
+    orb.addEventListener('click', () => {
+      hideWelcomeModal();
+      prewarmAudio();
+
+      if (isRecordingState) {
+        stopLocalWhisperRecording();
+      } else {
+        listenToVoice((transcript) => {
+          sendVoiceQuery(transcript);
+        });
+      }
+    });
+  }
+}
+
 if (typeof window !== "undefined") {
   const unlockEvents = ['touchstart', 'click'];
   unlockEvents.forEach(evt => {
     document.addEventListener(evt, () => prewarmAudio(), { passive: true, once: false });
   });
 
-  document.addEventListener('DOMContentLoaded', () => {
-    const orb = document.getElementById('orb-button') || document.querySelector('.orb-container');
-    if (orb) {
-      orb.addEventListener('click', () => {
-        hideWelcomeModal();
-        prewarmAudio();
-
-        if (isRecordingState) {
-          stopLocalWhisperRecording();
-        } else {
-          listenToVoice((transcript) => {
-            sendVoiceQuery(transcript);
-          });
-        }
-      });
-    }
-  });
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bindUIListeners);
+  } else {
+    bindUIListeners();
+  }
 }
