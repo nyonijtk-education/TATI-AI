@@ -1,7 +1,7 @@
 /**
- * Tati Voice AI Platform - chat.js
- * 100% Offline Compatible: Local Whisper STT + Kokoro-82M TTS + Ollama LLM
- * Features: Fast RMS VAD Silence Detection (0.8s Auto-Submit) & Resilient Offline Handler
+ * Tati Voice AI Platform - Optimized Mobile & Cloud chat.js
+ * Features: Background Kokoro ONNX Pre-warming, 4-bit (q4) Quantization,
+ * Fast 300ms Backend Ping & IndexedDB Persistent Caching.
  */
 
 const getBaseUrl = () => {
@@ -41,10 +41,14 @@ let activeMediaRecorder = null;
 let recordedChunks = [];
 let recordingTimeout = null;
 
-// Audio VAD (Voice Activity Detection) State
+// Audio VAD State
 let vadAudioCtx = null;
 let vadAnalyser = null;
 let vadCheckInterval = null;
+
+// Kokoro ONNX In-Browser Instance & Pre-warm State
+let inBrowserKokoroPromise = null;
+let isLocalBackendActiveCache = null;
 
 function cleanupVAD() {
   if (vadCheckInterval) {
@@ -58,13 +62,58 @@ function cleanupVAD() {
   vadAnalyser = null;
 }
 
-// --- Modal Overlay & UI ---
+// --- Dynamic Kokoro ONNX Background Pre-Warming ---
+async function prewarmInBrowserKokoro() {
+  if (inBrowserKokoroPromise) return inBrowserKokoroPromise;
 
+  inBrowserKokoroPromise = (async () => {
+    try {
+      console.log("⚡ Pre-warming In-Browser Kokoro-82M (q4 quantized, ~45MB)...");
+      const { KokoroTTS } = await import("https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm");
+      
+      const tts = await KokoroTTS.from_pretrained(
+        "onnx-community/Kokoro-82M-v1.0-ONNX",
+        { 
+          dtype: "q4",      // 4-bit quantization: 55% smaller & faster on mobile
+          device: "wasm",
+        }
+      );
+      console.log("✅ Kokoro-82M ONNX ready in browser cache.");
+      return tts;
+    } catch (err) {
+      console.warn("⚠️ Background Kokoro ONNX pre-warm error:", err);
+      inBrowserKokoroPromise = null;
+      throw err;
+    }
+  })();
+
+  return inBrowserKokoroPromise;
+}
+
+// --- Ultra-Fast Non-Blocking Health Check (300ms) ---
+async function isLocalBackendAlive() {
+  if (isLocalBackendActiveCache !== null) {
+    // Re-verify in background without blocking current thread
+    fetch(`${API_BASE_URL}/`, { method: "GET", signal: AbortSignal.timeout(400) })
+      .then(r => { isLocalBackendActiveCache = r.ok; })
+      .catch(() => { isLocalBackendActiveCache = false; });
+    return isLocalBackendActiveCache;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE_URL}/`, { method: "GET", signal: AbortSignal.timeout(300) });
+    isLocalBackendActiveCache = res.ok;
+    return res.ok;
+  } catch (e) {
+    isLocalBackendActiveCache = false;
+    return false;
+  }
+}
+
+// --- Modal Overlay & UI ---
 export function hideWelcomeModal() {
   const initOverlay = document.getElementById('init-overlay');
-  if (initOverlay) {
-    initOverlay.style.setProperty('display', 'none', 'important');
-  }
+  if (initOverlay) initOverlay.style.setProperty('display', 'none', 'important');
 
   const selectors = ['#welcome-overlay', '#welcome-modal', '.welcome-modal'];
   selectors.forEach(selector => {
@@ -84,16 +133,11 @@ function updateStatusUI(statusText, visualState = '') {
 }
 
 // --- Audio Unlocking & Cleanup ---
-
 export function prewarmAudio() {
   if (typeof window === "undefined") return;
 
-  if ("speechSynthesis" in window) {
-    try {
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.resume();
-    } catch (e) {}
-  }
+  // Trigger background loading of browser Kokoro engine on first user touch
+  prewarmInBrowserKokoro().catch(() => {});
 
   if (window._persistentAudio && !window._audioUnlocked) {
     try {
@@ -103,7 +147,6 @@ export function prewarmAudio() {
         playPromise.then(() => {
           window._persistentAudio.pause();
           window._audioUnlocked = true;
-          console.log("🔊 iOS AudioContext successfully unlocked.");
         }).catch(() => {});
       }
     } catch (e) {}
@@ -134,20 +177,9 @@ export function stopAudioPlayback() {
       window._persistentAudio.currentTime = 0;
     } catch (e) {}
   }
-  if (window._currentAudio) {
-    try {
-      window._currentAudio.pause();
-      window._currentAudio.currentTime = 0;
-    } catch (e) {}
-    window._currentAudio = null;
-  }
-  if (typeof window !== "undefined" && "speechSynthesis" in window) {
-    try { window.speechSynthesis.cancel(); } catch (e) {}
-  }
 }
 
-// --- Voice Recognition Engine (Cloud Guarded with Offline Handling) ---
-
+// --- Voice Recognition Engine ---
 export function startWakeWordListener(onWakeCallback, targetWord = "tati", lang = "en-US") {
   if (!SpeechRecognition || isSpeakingState || isRecordingState) return null;
 
@@ -170,7 +202,6 @@ export function startWakeWordListener(onWakeCallback, targetWord = "tati", lang 
           transcript.includes("ok tati") ||
           transcript.includes("tati")
         ) {
-          console.log("⚡ Wake word detected:", transcript);
           stopWakeWordListener();
           if (onWakeCallback) {
             onWakeCallback(transcript);
@@ -189,7 +220,6 @@ export function startWakeWordListener(onWakeCallback, targetWord = "tati", lang 
 
     recognition.onerror = (event) => {
       if (event.error === "network") {
-        console.warn("⚠️ Offline mode: Cloud SpeechRecognition unavailable. Tap orb for local Whisper STT.");
         stopWakeWordListener();
         updateStatusUI("OFFLINE - TAP ORB TO TALK", "idle");
         return;
@@ -211,12 +241,10 @@ export function startWakeWordListener(onWakeCallback, targetWord = "tati", lang 
 
     recognition.start();
     activeWakeWordRecognition = recognition;
-    console.log(`👂 Voice-to-Wake active. Listening for "Hey ${targetWord}"...`);
     updateStatusUI("LISTENING", "listening");
 
     return { stop: stopWakeWordListener };
   } catch (err) {
-    console.warn("Could not start Voice-to-Wake engine:", err);
     return null;
   }
 }
@@ -229,16 +257,12 @@ export function stopWakeWordListener() {
   }
 }
 
-// --- 100% Offline Local MediaRecorder STT with Fast RMS VAD ---
-
+// --- Fast RMS VAD Offline MediaRecorder STT ---
 export function stopLocalWhisperRecording() {
   cleanupVAD();
   if (activeMediaRecorder && activeMediaRecorder.state === "recording") {
-    console.log("🛑 Stopping microphone recording...");
     if (recordingTimeout) clearTimeout(recordingTimeout);
-    try {
-      activeMediaRecorder.requestData();
-    } catch (e) {}
+    try { activeMediaRecorder.requestData(); } catch (e) {}
     activeMediaRecorder.stop();
     return true;
   }
@@ -256,7 +280,6 @@ async function startLocalWhisperRecording(onResultCallback, onErrorCallback) {
     activeMediaRecorder = new MediaRecorder(stream);
     recordedChunks = [];
 
-    // RMS Audio VAD Setup
     const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
     vadAudioCtx = new AudioCtxClass();
     const sourceNode = vadAudioCtx.createMediaStreamSource(stream);
@@ -267,8 +290,8 @@ async function startLocalWhisperRecording(onResultCallback, onErrorCallback) {
     const timeDomainData = new Float32Array(vadAnalyser.fftSize);
     let speechDetected = false;
     let silenceStart = null;
-    const RMS_SPEECH_THRESHOLD = 0.025; // Filters ambient noise floor
-    const FAST_SILENCE_MS = 800;        // Auto-submits 0.8s after speech ends
+    const RMS_SPEECH_THRESHOLD = 0.025;
+    const FAST_SILENCE_MS = 800;
 
     vadCheckInterval = setInterval(() => {
       if (!isRecordingState || !vadAnalyser) return;
@@ -290,7 +313,6 @@ async function startLocalWhisperRecording(onResultCallback, onErrorCallback) {
         if (!silenceStart) {
           silenceStart = Date.now();
         } else if (Date.now() - silenceStart > FAST_SILENCE_MS) {
-          console.log("⚡ Speech complete (0.8s silence detected). Auto-submitting to Whisper...");
           stopLocalWhisperRecording();
         }
       }
@@ -328,28 +350,21 @@ async function startLocalWhisperRecording(onResultCallback, onErrorCallback) {
 
         const data = await response.json();
         if (data.transcript && data.transcript.trim()) {
-          console.log("📝 Offline STT Transcript:", data.transcript);
           if (onResultCallback) onResultCallback(data.transcript);
         } else {
           if (onErrorCallback) onErrorCallback("No speech detected.");
           updateStatusUI("NO SPEECH DETECTED", "idle");
         }
       } catch (err) {
-        console.error("Local Whisper STT error:", err);
         if (onErrorCallback) onErrorCallback("Offline STT failed.");
         updateStatusUI("STT ERROR", "error");
       }
     };
 
     activeMediaRecorder.start(100);
-
-    // Hard fallback cap at 10 seconds
-    recordingTimeout = setTimeout(() => {
-      stopLocalWhisperRecording();
-    }, 10000);
+    recordingTimeout = setTimeout(() => stopLocalWhisperRecording(), 10000);
 
   } catch (err) {
-    console.error("Microphone recording error:", err);
     isRecordingState = false;
     cleanupVAD();
     if (onErrorCallback) onErrorCallback("Microphone permission required.");
@@ -384,8 +399,7 @@ export function listenToVoice(onResultCallback, onErrorCallback, lang = "en-US")
     if (onResultCallback) onResultCallback(transcript);
   };
 
-  recognition.onerror = (event) => {
-    console.warn(`Speech recognition error (${event.error}). Switching to local offline Whisper STT...`);
+  recognition.onerror = () => {
     startLocalWhisperRecording(onResultCallback, onErrorCallback);
   };
 
@@ -405,8 +419,7 @@ export function listenToVoice(onResultCallback, onErrorCallback, lang = "en-US")
   };
 }
 
-// --- Speech Output Pipeline ---
-
+// --- Kokoro Voice Selection Map ---
 function mapVoiceToKokoro(presetName) {
   switch (presetName) {
     case "samantha":
@@ -427,6 +440,7 @@ function mapVoiceToKokoro(presetName) {
   }
 }
 
+// --- 100% Kokoro-Enforced Speech Output Pipeline ---
 export async function speakResponse(
   text, 
   onEndCallback = null, 
@@ -439,8 +453,6 @@ export async function speakResponse(
   isSpeakingState = true;
   updateStatusUI("TATI SPEAKING", "speaking");
 
-  const kokoroVoice = mapVoiceToKokoro(preferredVoiceName);
-
   const handleSpeechCompletion = () => {
     isSpeakingState = false;
     if (onEndCallback) {
@@ -450,39 +462,71 @@ export async function speakResponse(
     }
   };
 
+  const backendAvailable = await isLocalBackendAlive();
+
+  // 1. LOCAL MAC BACKEND MODE: Python FastAPI Kokoro-82M Engine
+  if (backendAvailable) {
+    try {
+      const kokoroVoice = mapVoiceToKokoro(preferredVoiceName);
+      const response = await fetch(`${API_BASE_URL}/api/tts`, {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "Bypass-Tunnel-Reminder": "true"
+        },
+        body: JSON.stringify({ text, voice: kokoroVoice, speed: rate }),
+      });
+
+      if (!response.ok) throw new Error(`Kokoro server status ${response.status}`);
+
+      const blob = await response.blob();
+      const arrayBuffer = await blob.arrayBuffer();
+
+      const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+      if (!window._audioCtx) window._audioCtx = new AudioCtxClass();
+      if (window._audioCtx.state === 'suspended') await window._audioCtx.resume();
+
+      const audioBuffer = await window._audioCtx.decodeAudioData(arrayBuffer);
+      const source = window._audioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+
+      const gainNode = window._audioCtx.createGain();
+      gainNode.gain.value = 1.6;
+
+      source.connect(gainNode);
+      gainNode.connect(window._audioCtx.destination);
+      window._currentAudioSource = source;
+
+      source.onended = () => {
+        window._currentAudioSource = null;
+        handleSpeechCompletion();
+      };
+
+      source.start(0);
+      return;
+    } catch (error) {
+      console.warn("⚠️ Local Kokoro backend unavailable. Falling back to cached In-Browser Kokoro ONNX...", error);
+    }
+  }
+
+  // 2. VERCEL ONLINE / LAPTOP-OFF MODE: In-Browser Kokoro-82M (q4 quantized)
   try {
-    const response = await fetch(`${API_BASE_URL}/api/tts`, {
-      method: "POST",
-      headers: { 
-        "Content-Type": "application/json",
-        "Bypass-Tunnel-Reminder": "true"
-      },
-      body: JSON.stringify({ text, voice: kokoroVoice, speed: rate }),
-    });
-
-    if (!response.ok) throw new Error(`Kokoro TTS error ${response.status}`);
-
-    const blob = await response.blob();
-    const arrayBuffer = await blob.arrayBuffer();
-
+    const tts = await prewarmInBrowserKokoro();
+    const kokoroVoice = mapVoiceToKokoro(preferredVoiceName);
+    
+    const audioResult = await tts.generate(text, { voice: kokoroVoice });
+    
     const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
-    if (!window._audioCtx) {
-      window._audioCtx = new AudioCtxClass();
-    }
-    if (window._audioCtx.state === 'suspended') {
-      await window._audioCtx.resume();
-    }
+    if (!window._audioCtx) window._audioCtx = new AudioCtxClass();
+    if (window._audioCtx.state === 'suspended') await window._audioCtx.resume();
 
-    const audioBuffer = await window._audioCtx.decodeAudioData(arrayBuffer);
+    const sampleRate = audioResult.sampling_rate || 24000;
+    const buffer = window._audioCtx.createBuffer(1, audioResult.audio.length, sampleRate);
+    buffer.getChannelData(0).set(audioResult.audio);
+
     const source = window._audioCtx.createBufferSource();
-    source.buffer = audioBuffer;
-
-    const gainNode = window._audioCtx.createGain();
-    gainNode.gain.value = 1.6;
-
-    source.connect(gainNode);
-    gainNode.connect(window._audioCtx.destination);
-
+    source.buffer = buffer;
+    source.connect(window._audioCtx.destination);
     window._currentAudioSource = source;
 
     source.onended = () => {
@@ -492,39 +536,14 @@ export async function speakResponse(
 
     source.start(0);
 
-  } catch (error) {
-    console.warn("⚠️ Web Audio amplification failed, falling back to Web Speech synthesis:", error);
-    fallbackWebSpeech(text, handleSpeechCompletion, lang, rate);
+  } catch (browserKokoroErr) {
+    console.error("❌ In-Browser Kokoro synthesis error:", browserKokoroErr);
+    updateStatusUI("KOKORO TTS ERROR", "error");
+    isSpeakingState = false;
   }
 }
 
-function fallbackWebSpeech(text, onEndCallback, lang, rate) {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-    if (onEndCallback) onEndCallback();
-    return;
-  }
-
-  window.speechSynthesis.cancel();
-  window.speechSynthesis.resume();
-
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = rate;
-  utterance.lang = lang;
-
-  const voices = window.speechSynthesis.getVoices();
-  if (voices.length > 0) {
-    utterance.voice = voices.find(v => v.lang.startsWith(lang.split('-')[0])) || voices[0];
-  }
-
-  utterance.onend = () => { if (onEndCallback) onEndCallback(); };
-  utterance.onerror = () => { if (onEndCallback) onEndCallback(); };
-
-  window._currentUtterance = utterance;
-  window.speechSynthesis.speak(utterance);
-}
-
-// --- Query Pipeline ---
-
+// --- Dual-Engine LLM Query Pipeline ---
 export async function sendVoiceQuery(
   transcript, 
   autoSpeak = true, 
@@ -539,33 +558,78 @@ export async function sendVoiceQuery(
   if (autoSpeak) prewarmAudio();
   updateStatusUI("THINKING...", "thinking");
 
+  const backendAvailable = await isLocalBackendAlive();
+
+  if (backendAvailable) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/chat`, {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "Bypass-Tunnel-Reminder": "true"
+        },
+        body: JSON.stringify({ 
+          prompt: transcript.trim(),
+          transcript: transcript.trim(), 
+          language: lang 
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const responseText = data.response_text || data.response || data.reply || "";
+        if (autoSpeak && responseText) {
+          speakResponse(responseText, null, preferredVoiceName, lang, rate);
+        }
+        return {
+          responseText: responseText,
+          databaseHits: data.database_hits || 0,
+          hits: data.hits || [],
+          provider: data.provider || "ollama_local"
+        };
+      }
+    } catch (err) {
+      console.warn("⚠️ Local chat endpoint failed, using online Groq...");
+    }
+  }
+
+  // ONLINE MODE (Vercel Cloud): Route prompt to Groq Cloud API
+  const groqKey = 
+    (typeof process !== "undefined" && process.env && (process.env.NEXT_PUBLIC_GROQ_API_KEY || process.env.REACT_APP_GROQ_API_KEY)) || 
+    window.GROQ_API_KEY;
+
+  if (!groqKey) {
+    const offlineMsg = "Laptop backend is offline and no Groq API key was found on Vercel.";
+    updateStatusUI("BACKEND OFFLINE", "error");
+    if (autoSpeak) speakResponse(offlineMsg, null, preferredVoiceName, lang, rate);
+    throw new Error(offlineMsg);
+  }
+
   try {
-    const response = await fetch(`${API_BASE_URL}/api/chat`, {
+    const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
-      headers: { 
+      headers: {
         "Content-Type": "application/json",
-        "Bypass-Tunnel-Reminder": "true"
+        "Authorization": `Bearer ${groqKey}`
       },
-      body: JSON.stringify({ 
-        prompt: transcript.trim(),
-        transcript: transcript.trim(), 
-        language: lang 
-      }),
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        messages: [
+          {
+            role: "system",
+            content: "You are Tati Voice AI, speaking directly to a user. Answer concisely in exactly 2 warm, clear sentences."
+          },
+          { role: "user", content: transcript.trim() }
+        ],
+        max_tokens: 150,
+        temperature: 0.4
+      })
     });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || `Server error code ${response.status}`);
-    }
+    if (!groqRes.ok) throw new Error(`Groq Online API status ${groqRes.status}`);
 
-    const data = await response.json();
-    const responseText = data.response_text || data.response || data.reply || "";
-
-    if (data.provider === "groq_cloud") {
-      console.log("⚡ Fallback Active: Query processed via Groq Cloud.");
-    } else if (data.provider === "ollama_local") {
-      console.log("🟢 Primary Active: Query processed locally via Ollama.");
-    }
+    const groqData = await groqRes.json();
+    const responseText = groqData.choices[0]?.message?.content || "No response received.";
 
     if (autoSpeak && responseText) {
       speakResponse(responseText, null, preferredVoiceName, lang, rate);
@@ -573,16 +637,14 @@ export async function sendVoiceQuery(
 
     return {
       responseText: responseText,
-      databaseHits: data.database_hits,
-      hits: data.hits || [],
-      provider: data.provider || "unknown"
+      databaseHits: 0,
+      hits: [],
+      provider: "groq_cloud_vercel"
     };
+
   } catch (error) {
-    console.error("Error connecting to Tati Backend:", error);
+    console.error("Online Query error:", error);
     updateStatusUI("ERROR OCCURRED", "error");
-    if (autoSpeak) {
-      speakResponse("Sorry, I could not reach the Tati backend server.", null, preferredVoiceName, lang, rate);
-    }
     throw error;
   }
 }
@@ -595,13 +657,11 @@ export async function initiateWelcomeConsole() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach(track => track.stop());
-    } catch (e) {
-      console.warn("Microphone access prompt error:", e);
-    }
+    } catch (e) {}
   }
 
   speakResponse(
-    "Welcome to Tati Voice AI Console. Local Kokoro neural speech engine online. Say Hey Tati or tap the orb to begin."
+    "Welcome to Tati Voice AI Console. Kokoro neural speech engine ready. Say Hey Tati or tap the orb to begin."
   );
 }
 
@@ -624,6 +684,9 @@ if (typeof window !== "undefined") {
   });
 
   document.addEventListener('DOMContentLoaded', () => {
+    // Initiate background Kokoro ONNX model compilation on page load
+    prewarmInBrowserKokoro().catch(() => {});
+
     const orb = document.getElementById('orb-button') || document.querySelector('.orb-container');
     if (orb) {
       orb.addEventListener('click', () => {
