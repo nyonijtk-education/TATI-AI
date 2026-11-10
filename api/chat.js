@@ -1,189 +1,200 @@
-// Dynamic Base URL Resolution:
-// Uses localhost:8000 when developing locally on localhost:3000, 
-// or falls back to Cloudflare Tunnel / Vercel Environment Variables in production.
-const getBaseUrl = () => {
-  if (typeof process !== "undefined" && process.env) {
-    if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-    if (process.env.REACT_APP_API_URL) return process.env.REACT_APP_API_URL;
-  }
-  if (typeof window !== "undefined" && window.location.hostname === "localhost") {
-    return "http://localhost:8000";
-  }
-  return "https://goat-tsunami-give-putting.trycloudflare.com";
+// api/chat.js - Streaming Vercel Serverless / Edge Function Proxy for Tati Voice AI
+
+export const config = {
+  runtime: 'edge', // Edge runtime for ultra-low latency streaming without serverless response buffering
 };
 
-const API_BASE_URL = getBaseUrl();
+const LOCALTUNNEL_URL = process.env.LOCAL_BACKEND_URL || "https://tati-voice-ai-backend.loca.lt";
 
-// Initialize Speech Recognition API across browsers
-const SpeechRecognition = 
-  typeof window !== "undefined" && 
-  (window.SpeechRecognition || window.webkitSpeechRecognition);
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Bypass-Tunnel-Reminder",
+};
 
-// Prevent Chrome Garbage Collection from dropping audio mid-speech
-window._currentUtterance = null;
-
-/**
- * Pre-warms browser audio context synchronously on user interaction
- */
-export function prewarmAudio() {
-  if (typeof window !== "undefined" && "speechSynthesis" in window) {
-    window.speechSynthesis.resume();
-    const silent = new SpeechSynthesisUtterance("");
-    window.speechSynthesis.speak(silent);
-  }
-}
-
-/**
- * Web Speech API - Native Browser Text-to-Speech
- * @param {string} text - Response text to speak
- */
-export function speakResponse(text) {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-    console.warn("Text-to-speech is not supported in this browser.");
-    return;
+export default async function handler(req) {
+  // 1. CORS Preflight
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 200,
+      headers: corsHeaders,
+    });
   }
 
-  // Clear existing queue and unpause engine
-  window.speechSynthesis.cancel();
-  window.speechSynthesis.resume();
-
-  const speak = () => {
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-    utterance.lang = "en-US";
-
-    // Set voice if available
-    const voices = window.speechSynthesis.getVoices();
-    if (voices.length > 0) {
-      utterance.voice = voices.find((v) => v.lang.includes("en")) || voices[0];
-    }
-
-    utterance.onstart = () => console.log("🔊 Tati Voice AI is speaking...");
-    utterance.onend = () => console.log("✅ Speech playback finished.");
-    utterance.onerror = (e) => console.error("❌ Audio synthesis error:", e);
-
-    // Retain global reference
-    window._currentUtterance = utterance;
-    window.speechSynthesis.speak(utterance);
-  };
-
-  if (window.speechSynthesis.getVoices().length === 0) {
-    window.speechSynthesis.onvoiceschanged = speak;
-  } else {
-    speak();
-  }
-}
-
-/**
- * Web Speech API - Speech-to-Text Recognition
- * @param {Function} onResultCallback - Receives transcribed text
- * @param {Function} onErrorCallback - Receives recognition error
- */
-export function listenToVoice(onResultCallback, onErrorCallback) {
-  if (!SpeechRecognition) {
-    const errorMsg = "Speech recognition is not supported in this browser.";
-    console.warn(errorMsg);
-    if (onErrorCallback) onErrorCallback(errorMsg);
-    return null;
+  // 2. Validate Method
+  if (req.method !== "POST") {
+    return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      status: 405,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
-  prewarmAudio();
-
-  const recognition = new SpeechRecognition();
-  recognition.continuous = false;
-  recognition.interimResults = false;
-  recognition.lang = "en-US";
-
-  recognition.onresult = (event) => {
-    const transcript = event.results[0][0].transcript;
-    if (onResultCallback) onResultCallback(transcript);
-  };
-
-  recognition.onerror = (event) => {
-    console.error("Speech recognition error:", event.error);
-    if (onErrorCallback) onErrorCallback(event.error);
-  };
-
-  return {
-    start: () => recognition.start(),
-    stop: () => recognition.stop(),
-  };
-}
-
-/**
- * Sends spoken query to FastAPI RAG backend (/api/chat)
- * @param {string} transcript - Spoken user query
- * @param {boolean} autoSpeak - Automatically trigger TTS upon response
- */
-export async function sendVoiceQuery(transcript, autoSpeak = true) {
-  if (!transcript || !transcript.trim()) {
-    throw new Error("Voice transcript cannot be empty.");
-  }
-
-  if (autoSpeak) prewarmAudio();
-
+  // 3. Parse Request Payload
+  let body;
   try {
-    const response = await fetch(`${API_BASE_URL}/api/chat`, {
+    body = await req.json();
+  } catch (e) {
+    return new Response(JSON.stringify({ error: "Invalid JSON payload" }), {
+      status: 400,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  const query = (body.prompt || body.transcript || "").trim();
+  const language = body.language || "en-US";
+
+  if (!query) {
+    return new Response(JSON.stringify({ error: "Query text is required." }), {
+      status: 400,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  // 4. PRIMARY: Local Backend via Tunnel (Streaming with 2.5s Connection Timeout)
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
+
+    const localResponse = await fetch(`${LOCALTUNNEL_URL}/api/chat`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "Bypass-Tunnel-Reminder": "true"
       },
       body: JSON.stringify({
-        transcript: transcript.trim(),
+        prompt: query,
+        transcript: query,
+        language: language,
+        stream: true
       }),
+      signal: controller.signal
     });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || `Server error with status code ${response.status}`);
+    clearTimeout(timeoutId);
+
+    if (localResponse.ok && localResponse.body) {
+      const contentType = localResponse.headers.get("content-type") || "";
+      
+      // If local backend supports streaming
+      if (contentType.includes("text/event-stream") || contentType.includes("text/plain") || contentType.includes("application/x-ndjson")) {
+        return new Response(localResponse.body, {
+          status: 200,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache, no-transform",
+            "X-Response-Provider": "ollama_local_stream"
+          }
+        });
+      }
+
+      // If local backend returned non-streaming JSON
+      const localData = await localResponse.json();
+      const responseText = localData.response_text || localData.response || localData.reply || "";
+
+      if (responseText.trim()) {
+        return new Response(JSON.stringify({
+          response_text: responseText,
+          database_hits: localData.database_hits || 0,
+          hits: localData.hits || [],
+          provider: localData.provider || "ollama_local"
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+    } else {
+      console.warn(`⚠️ Localtunnel HTTP ${localResponse.status}. Triggering Groq Cloud stream fallback...`);
     }
-
-    const data = await response.json();
-
-    if (autoSpeak && data.response_text) {
-      speakResponse(data.response_text);
-    }
-
-    return {
-      responseText: data.response_text,
-      databaseHits: data.database_hits,
-      hits: data.hits || [],
-    };
-  } catch (error) {
-    console.error("Error connecting to Tati RAG Voice Backend:", error);
-    throw error;
+  } catch (err) {
+    console.warn("⚠️ Local Ollama backend offline/timeout over tunnel. Falling back to Groq Cloud stream...");
   }
-}
 
-/**
- * Direct Meilisearch search helper
- */
-export async function searchAcademicRecords(query, limit = 20) {
-  if (!query || !query.trim()) {
-    throw new Error("Search query cannot be empty.");
+  // 5. FALLBACK: Groq Cloud LPU Engine (~120ms TTFT Token Streaming)
+  const apiKey = process.env.GROQ_API_KEY || process.env.NEXT_PUBLIC_GROQ_API_KEY;
+
+  if (!apiKey) {
+    return new Response(JSON.stringify({
+      error: "Local backend offline and GROQ_API_KEY missing from Vercel environment."
+    }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" }
+    });
   }
 
   try {
-    const response = await fetch(`${API_BASE_URL}/search`, {
+    const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey.trim()}`
       },
       body: JSON.stringify({
-        query: query.trim(),
-        limit: limit,
-      }),
+        model: "llama-3.1-8b-instant",
+        messages: [
+          {
+            role: "system",
+            content: "You are Tati Voice AI, a fast and empathetic assistant. Answer concisely in exactly 2 clear, warm sentences."
+          },
+          { role: "user", content: query }
+        ],
+        max_tokens: 150,
+        temperature: 0.4,
+        stream: true
+      })
     });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || `Search failed with status code ${response.status}`);
+    if (!groqResponse.ok) {
+      const errText = await groqResponse.text().catch(() => "");
+      return new Response(JSON.stringify({
+        error: `Groq API Error (${groqResponse.status}): ${errText}`
+      }), {
+        status: groqResponse.status,
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
     }
 
-    return await response.json();
-  } catch (error) {
-    console.error("Error querying academic database:", error);
-    throw error;
+    // Transform OpenAI SSE format (`data: {"choices":[{"delta":{"content":"..."}}]}`) into raw text stream for chat.js
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+
+    const transformStream = new TransformStream({
+      transform(chunk, controller) {
+        const text = decoder.decode(chunk, { stream: true });
+        const lines = text.split("\n");
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith("data: ") && trimmed !== "data: [DONE]") {
+            try {
+              const parsed = JSON.parse(trimmed.slice(6));
+              const content = parsed.choices?.[0]?.delta?.content;
+              if (content) {
+                controller.enqueue(encoder.encode(content));
+              }
+            } catch (e) {
+              // Ignore partial JSON chunks
+            }
+          }
+        }
+      }
+    });
+
+    return new Response(groqResponse.body.pipeThrough(transformStream), {
+      status: 200,
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Response-Provider": "groq_vercel_cloud"
+      }
+    });
+
+  } catch (err) {
+    return new Response(JSON.stringify({
+      error: `Groq Cloud Fallback Failure: ${err.message}`
+    }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" }
+    });
   }
 }

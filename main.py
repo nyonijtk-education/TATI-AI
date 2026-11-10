@@ -57,12 +57,11 @@ def get_active_groq_model() -> str:
         print(f"📋 Models accessible under your Groq key: {available_ids}")
         
         preferred_candidates = [
+            "llama-3.1-8b-instant",
+            "llama-3.3-70b-versatile",
             "qwen/qwen3.8-27b",
             "openai/gpt-oss-20b",
-            "openai/gpt-oss-120b",
-            "allam-2-7b",
-            "llama-3.1-8b-instant",
-            "llama-3.3-70b-versatile"
+            "allam-2-7b"
         ]
         
         for candidate in preferred_candidates:
@@ -82,7 +81,7 @@ def get_active_groq_model() -> str:
     except Exception as e:
         print(f"⚠️ Error fetching Groq models list: {e}")
         
-    return "qwen/qwen3.8-27b"
+    return "llama-3.1-8b-instant"
 
 # Import Kokoro Neural TTS Pipeline
 try:
@@ -122,8 +121,10 @@ meili_client = meilisearch.Client('http://127.0.0.1:7700')
 index = meili_client.index('academic_records')
 
 class ChatRequest(BaseModel):
-    transcript: str
+    transcript: str = ""
+    prompt: str = ""
     language: str = "en-US"
+    stream: bool = False
 
 class TTSRequest(BaseModel):
     text: str
@@ -201,7 +202,6 @@ def broader_meili_search(query_text: str, max_hits: int = 5):
 def query_ollama_local(prompt_text: str) -> str:
     """Queries local Ollama using dynamic timeouts and candidate model fallbacks."""
     online = is_online()
-    # 10s online (gives local LLM time to generate before Groq fallback), 120s offline
     ollama_timeout = 10 if online else 120
     url = "http://127.0.0.1:11434/api/generate"
     
@@ -210,7 +210,7 @@ def query_ollama_local(prompt_text: str) -> str:
             "model": model_name,
             "prompt": prompt_text,
             "stream": False,
-            "keep_alive": "24h",
+            "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "24h"),
             "options": {
                 "num_ctx": 1024,
                 "num_predict": 120,
@@ -238,9 +238,44 @@ def query_ollama_local(prompt_text: str) -> str:
             print(f"⚠️ Ollama Connection Error for model '{model_name}': {ue.reason}")
             break
         except Exception as e:
-            print(f"⚠️ Ollama query attempt for '{model_name}' failed (online={online}, timeout={ollama_timeout}s): {e}")
+            print(f"⚠️ Ollama query attempt for '{model_name}' failed: {e}")
 
     return ""
+
+def generate_ollama_stream(prompt_text: str):
+    """Generator streaming tokens from local Ollama via SSE format."""
+    url = "http://127.0.0.1:11434/api/generate"
+    payload = json.dumps({
+        "model": "llama3:latest",
+        "prompt": prompt_text,
+        "stream": True,
+        "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "2m"),
+        "options": {
+            "num_ctx": 1024,
+            "num_predict": 120,
+            "temperature": 0.4
+        }
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=5) as response:
+            for line in response:
+                if line:
+                    decoded = line.decode("utf-8").strip()
+                    if decoded:
+                        data = json.loads(decoded)
+                        chunk = data.get("response", "")
+                        if chunk:
+                            yield chunk
+    except Exception as e:
+        print(f"⚠️ Ollama streaming exception: {e}")
 
 def query_groq_fallback(system_instruction: str, user_prompt: str):
     if not groq_client:
@@ -309,7 +344,6 @@ async def transcribe_audio_offline(file: UploadFile = File(...)):
         if not ext:
             ext = ".webm"
 
-        # Write bytes to temporary file on disk for ffmpeg/faster-whisper decoding
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
             temp_file.write(audio_bytes)
             temp_path = temp_file.name
@@ -319,7 +353,7 @@ async def transcribe_audio_offline(file: UploadFile = File(...)):
         transcript = " ".join([segment.text for segment in segments]).strip()
         print(f"📝 STT Result: '{transcript}'")
         
-        return {"transcript": transcript}
+        return {"transcript": transcript, "provider": "faster_whisper_local"}
 
     except HTTPException:
         raise
@@ -366,11 +400,31 @@ def generate_local_neural_speech(req: TTSRequest):
         print(f"❌ Kokoro Neural TTS Generation Error: {e}")
         raise HTTPException(status_code=500, detail=f"Kokoro synthesis failed: {str(e)}")
 
-@app.post("/api/chat")
-def chat_endpoint(req: ChatRequest):
-    query_text = req.transcript.strip()
+@app.post("/api/chat/stream")
+def chat_stream_endpoint(req: ChatRequest):
+    query_text = (req.prompt or req.transcript).strip()
     if not query_text:
         raise HTTPException(status_code=400, detail="Query transcript cannot be empty.")
+
+    hits = broader_meili_search(query_text, max_hits=5)
+    system_instructions = "You are Tati Voice AI, an Earth science research assistant. Answer concisely in 2 clear sentences."
+    
+    if hits:
+        context_items = [f"Record {idx}:\nTitle: {h.get('title')}\nSummary: {h.get('abstract', '')}\n" for idx, h in enumerate(hits, 1)]
+        full_prompt = f"{system_instructions}\n\nContext:\n{''.join(context_items)}\n\nUser Question: {query_text}\nAnswer:"
+    else:
+        full_prompt = f"{system_instructions}\n\nUser Question: {query_text}\nAnswer:"
+
+    return StreamingResponse(generate_ollama_stream(full_prompt), media_type="text/event-stream")
+
+@app.post("/api/chat")
+def chat_endpoint(req: ChatRequest):
+    query_text = (req.prompt or req.transcript).strip()
+    if not query_text:
+        raise HTTPException(status_code=400, detail="Query transcript cannot be empty.")
+
+    if req.stream:
+        return chat_stream_endpoint(req)
 
     hits = broader_meili_search(query_text, max_hits=5)
 

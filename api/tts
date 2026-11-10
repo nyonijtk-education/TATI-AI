@@ -1,0 +1,66 @@
+// api/tts.js (Vercel Serverless Function Proxy for Kokoro Neural TTS)
+
+const LOCALTUNNEL_URL = process.env.LOCAL_BACKEND_URL || "https://tati-voice-ai-backend.loca.lt";
+
+export default async function handler(req, res) {
+  // Set CORS headers for Vercel Serverless Proxying
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Bypass-Tunnel-Reminder");
+
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  const { text, voice, speed } = req.body || {};
+
+  if (!text || !text.trim()) {
+    return res.status(400).json({ error: "Text parameter is required for TTS synthesis." });
+  }
+
+  // Proxy TTS request to local FastAPI (Kokoro-82M PyTorch engine) over Localtunnel
+  try {
+    const controller = new AbortController();
+    // 4-second timeout guard for audio synthesis over tunnel
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+    const localRes = await fetch(`${LOCALTUNNEL_URL}/api/tts`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Bypass-Tunnel-Reminder": "true"
+      },
+      body: JSON.stringify({
+        text: text.trim(),
+        voice: voice || "af_heart",
+        speed: speed || 1.0
+      }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!localRes.ok) {
+      console.warn(`⚠️ Local Kokoro TTS backend returned status ${localRes.status}. Client will fallback to WebSpeech.`);
+      return res.status(localRes.status).json({
+        error: `Kokoro TTS engine returned HTTP ${localRes.status}`
+      });
+    }
+
+    const audioBuffer = await localRes.arrayBuffer();
+    
+    res.setHeader("Content-Type", "audio/wav");
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    return res.status(200).send(Buffer.from(audioBuffer));
+
+  } catch (err) {
+    console.warn("⚠️ Local Kokoro TTS tunnel unreachable or timed out. Triggering WebSpeech fallback:", err.message);
+    return res.status(503).json({
+      error: "Local Kokoro TTS engine unavailable over tunnel. WebSpeech fallback active."
+    });
+  }
+}

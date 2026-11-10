@@ -1,0 +1,70 @@
+// api/stt.js (Vercel Serverless Function Proxy for Faster-Whisper Local STT)
+
+const LOCALTUNNEL_URL = process.env.LOCAL_BACKEND_URL || "https://tati-voice-ai-backend.loca.lt";
+
+// Disable Vercel's default body parser so multipart/form-data audio streams intact
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
+
+export default async function handler(req, res) {
+  // CORS Headers for Vercel Proxying
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Bypass-Tunnel-Reminder");
+
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  try {
+    // Read raw incoming multipart stream into Buffer
+    const chunks = [];
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
+    const rawBody = Buffer.concat(chunks);
+
+    const controller = new AbortController();
+    // 5-second timeout guard for Faster-Whisper processing over tunnel
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+    const localRes = await fetch(`${LOCALTUNNEL_URL}/api/stt`, {
+      method: "POST",
+      headers: {
+        "Content-Type": req.headers["content-type"] || "multipart/form-data",
+        "Bypass-Tunnel-Reminder": "true"
+      },
+      body: rawBody,
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!localRes.ok) {
+      const errText = await localRes.text().catch(() => "");
+      console.warn(`⚠️ Local Whisper STT returned HTTP ${localRes.status}: ${errText}`);
+      return res.status(localRes.status).json({
+        error: `Local Faster-Whisper engine returned status ${localRes.status}`
+      });
+    }
+
+    const data = await localRes.json();
+    return res.status(200).json({
+      transcript: data.transcript || data.text || "",
+      provider: data.provider || "faster_whisper_local"
+    });
+
+  } catch (err) {
+    console.warn("⚠️ Local Faster-Whisper tunnel unreachable or timed out:", err.message);
+    return res.status(503).json({
+      error: "Local Faster-Whisper STT engine unavailable over tunnel."
+    });
+  }
+}

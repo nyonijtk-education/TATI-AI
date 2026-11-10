@@ -1,0 +1,117 @@
+// api/chat.js (Vercel Serverless Function Proxy)
+
+const LOCALTUNNEL_URL = process.env.LOCAL_BACKEND_URL || "https://tati-voice-ai-backend.loca.lt";
+
+export default async function handler(req, res) {
+  // CORS Preflight Header handling for Vercel Serverless Function
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Bypass-Tunnel-Reminder");
+
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  const { prompt, transcript, language } = req.body || {};
+  const query = (prompt || transcript || "").trim();
+
+  if (!query) {
+    return res.status(400).json({ error: "Query text is required." });
+  }
+
+  // 1. PRIMARY: Try Local Ollama Backend via Localtunnel (2.5s Timeout Guard)
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
+
+    const localResponse = await fetch(`${LOCALTUNNEL_URL}/api/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Bypass-Tunnel-Reminder": "true"
+      },
+      body: JSON.stringify({
+        prompt: query,
+        transcript: query,
+        language: language || "en-US"
+      }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (localResponse.ok) {
+      const localData = await localResponse.json();
+      const responseText = localData.response_text || localData.response || localData.reply || "";
+      
+      if (responseText.trim()) {
+        return res.status(200).json({
+          response_text: responseText,
+          database_hits: localData.database_hits || 0,
+          hits: localData.hits || [],
+          provider: localData.provider || "ollama_local"
+        });
+      }
+    } else {
+      console.warn(`⚠️ Localtunnel returned HTTP status ${localResponse.status}. Triggering Groq Cloud fallback...`);
+    }
+  } catch (e) {
+    console.warn("⚠️ Local Ollama backend timed out or unreachable. Triggering Groq Cloud fallback...");
+  }
+
+  // 2. FALLBACK: Groq Cloud API
+  const apiKey = process.env.GROQ_API_KEY || process.env.NEXT_PUBLIC_GROQ_API_KEY;
+
+  if (!apiKey) {
+    return res.status(500).json({
+      error: "Local backend offline and GROQ_API_KEY is missing from Vercel Environment Variables."
+    });
+  }
+
+  try {
+    const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey.trim()}`
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        messages: [
+          {
+            role: "system",
+            content: "You are Tati Voice AI, a helpful research assistant. Answer concisely in exactly 2 warm, clear sentences."
+          },
+          { role: "user", content: query }
+        ],
+        max_tokens: 150,
+        temperature: 0.4
+      })
+    });
+
+    if (!groqRes.ok) {
+      const errData = await groqRes.json().catch(() => ({}));
+      return res.status(groqRes.status).json({
+        error: errData.error?.message || `Groq API Error ${groqRes.status}`
+      });
+    }
+
+    const groqData = await groqRes.json();
+    const replyText = groqData.choices?.[0]?.message?.content || "No response received.";
+
+    return res.status(200).json({
+      response_text: replyText,
+      database_hits: 0,
+      hits: [],
+      provider: "groq_vercel_cloud"
+    });
+  } catch (err) {
+    return res.status(500).json({
+      error: err.message || "Failed to communicate with Groq Cloud fallback."
+    });
+  }
+}
