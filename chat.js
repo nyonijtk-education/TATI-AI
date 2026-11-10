@@ -64,7 +64,7 @@ class SpeechQueue {
     if (this.queue.length === 0) {
       this.isPlaying = false;
       isSpeakingState = false;
-      updateStatusUI("IDLE", "idle");
+      updateStatusUI("SAY 'HEY TATI'", "idle");
       return;
     }
 
@@ -258,7 +258,7 @@ export function startWakeWordListener(onWakeCallback, targetWord = "tati", lang 
     recognition.start();
     activeWakeWordRecognition = recognition;
     console.log(`👂 Voice-to-Wake active. Listening for "Hey ${targetWord}"...`);
-    updateStatusUI("LISTENING", "listening");
+    updateStatusUI("SAY 'HEY TATI'", "idle");
 
     return { stop: stopWakeWordListener };
   } catch (err) {
@@ -350,7 +350,7 @@ async function startLocalWhisperRecording(onResultCallback, onErrorCallback) {
       stream.getTracks().forEach(t => t.stop());
 
       if (recordedChunks.length === 0) {
-        updateStatusUI("NO AUDIO DETECTED", "idle");
+        updateStatusUI("SAY 'HEY TATI'", "idle");
         return;
       }
 
@@ -370,17 +370,21 @@ async function startLocalWhisperRecording(onResultCallback, onErrorCallback) {
         if (!response.ok) throw new Error(`STT Status ${response.status}`);
 
         const data = await response.json();
-        if (data.transcript && data.transcript.trim()) {
-          console.log("📝 STT Transcript:", data.transcript);
-          if (onResultCallback) onResultCallback(data.transcript);
+        const transcript = (data.transcript || "").trim();
+
+        if (transcript) {
+          console.log("📝 STT Transcript:", transcript);
+          updateStatusUI("THINKING...", "thinking");
+          if (onResultCallback) onResultCallback(transcript);
         } else {
+          console.warn("⚠️ Empty transcript returned from local Whisper STT.");
           if (onErrorCallback) onErrorCallback("No speech detected.");
-          updateStatusUI("NO SPEECH DETECTED", "idle");
+          updateStatusUI("SAY 'HEY TATI'", "idle");
         }
       } catch (err) {
         console.error("Whisper STT error:", err);
         if (onErrorCallback) onErrorCallback("STT failed.");
-        updateStatusUI("STT ERROR", "error");
+        updateStatusUI("SAY 'HEY TATI'", "idle");
       }
     };
 
@@ -420,7 +424,12 @@ export function listenToVoice(onResultCallback, onErrorCallback, lang = "en-US")
 
   recognition.onresult = (event) => {
     const transcript = event.results[0][0].transcript;
-    if (onResultCallback) onResultCallback(transcript);
+    if (transcript && transcript.trim()) {
+      updateStatusUI("THINKING...", "thinking");
+      if (onResultCallback) onResultCallback(transcript.trim());
+    } else {
+      updateStatusUI("SAY 'HEY TATI'", "idle");
+    }
   };
 
   recognition.onerror = (event) => {
@@ -576,6 +585,7 @@ export async function sendVoiceQuery(
   rate = 1.0
 ) {
   if (!transcript || !transcript.trim()) {
+    updateStatusUI("SAY 'HEY TATI'", "idle");
     throw new Error("Voice transcript cannot be empty.");
   }
 
@@ -639,6 +649,8 @@ export async function sendVoiceQuery(
 
       if (autoSpeak && responseText) {
         speakResponse(responseText, null, preferredVoiceName, lang, rate);
+      } else {
+        updateStatusUI("SAY 'HEY TATI'", "idle");
       }
 
       return {
@@ -651,7 +663,7 @@ export async function sendVoiceQuery(
 
   } catch (error) {
     console.error("Error connecting to Tati Backend:", error);
-    updateStatusUI("ERROR OCCURRED", "error");
+    updateStatusUI("SAY 'HEY TATI'", "idle");
     if (autoSpeak) {
       speakResponse("Sorry, I could not reach the Tati backend server.", null, preferredVoiceName, lang, rate);
     }
