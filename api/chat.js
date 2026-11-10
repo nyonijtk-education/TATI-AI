@@ -1,10 +1,8 @@
 // api/chat.js - Streaming Vercel Serverless / Edge Function Proxy for Tati Voice AI
 
 export const config = {
-  runtime: 'edge', // Edge runtime for ultra-low latency streaming without serverless response buffering
+  runtime: 'edge',
 };
-
-const LOCALTUNNEL_URL = process.env.LOCAL_BACKEND_URL || "https://tati-voice-ai-backend.loca.lt";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -13,15 +11,10 @@ const corsHeaders = {
 };
 
 export default async function handler(req) {
-  // 1. CORS Preflight
   if (req.method === "OPTIONS") {
-    return new Response(null, {
-      status: 200,
-      headers: corsHeaders,
-    });
+    return new Response(null, { status: 200, headers: corsHeaders });
   }
 
-  // 2. Validate Method
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ error: "Method not allowed" }), {
       status: 405,
@@ -29,7 +22,6 @@ export default async function handler(req) {
     });
   }
 
-  // 3. Parse Request Payload
   let body;
   try {
     body = await req.json();
@@ -42,6 +34,7 @@ export default async function handler(req) {
 
   const query = (body.prompt || body.transcript || "").trim();
   const language = body.language || "en-US";
+  const backendUrl = (process.env.LOCAL_BACKEND_URL || "https://tati-voice-ai-backend.loca.lt").replace(/\/$/, "");
 
   if (!query) {
     return new Response(JSON.stringify({ error: "Query text is required." }), {
@@ -50,12 +43,12 @@ export default async function handler(req) {
     });
   }
 
-  // 4. PRIMARY: Local Backend via Tunnel (Streaming with 2.5s Connection Timeout)
+  // 1. Local Backend Tunnel Attempt (2.5s Timeout)
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 2500);
 
-    const localResponse = await fetch(`${LOCALTUNNEL_URL}/api/chat`, {
+    const localResponse = await fetch(`${backendUrl}/api/chat`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -74,8 +67,7 @@ export default async function handler(req) {
 
     if (localResponse.ok && localResponse.body) {
       const contentType = localResponse.headers.get("content-type") || "";
-      
-      // If local backend supports streaming
+
       if (contentType.includes("text/event-stream") || contentType.includes("text/plain") || contentType.includes("application/x-ndjson")) {
         return new Response(localResponse.body, {
           status: 200,
@@ -88,7 +80,6 @@ export default async function handler(req) {
         });
       }
 
-      // If local backend returned non-streaming JSON
       const localData = await localResponse.json();
       const responseText = localData.response_text || localData.response || localData.reply || "";
 
@@ -103,15 +94,13 @@ export default async function handler(req) {
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
       }
-    } else {
-      console.warn(`⚠️ Localtunnel HTTP ${localResponse.status}. Triggering Groq Cloud stream fallback...`);
     }
   } catch (err) {
-    console.warn("⚠️ Local Ollama backend offline/timeout over tunnel. Falling back to Groq Cloud stream...");
+    console.warn("Local Ollama backend offline/timeout. Falling back to Groq Cloud stream...");
   }
 
-  // 5. FALLBACK: Groq Cloud LPU Engine (~120ms TTFT Token Streaming)
-  const apiKey = process.env.GROQ_API_KEY || process.env.NEXT_PUBLIC_GROQ_API_KEY;
+  // 2. Fallback: Groq Cloud LPU Token Streaming (~120ms TTFT)
+  const apiKey = (process.env.GROQ_API_KEY || process.env.NEXT_PUBLIC_GROQ_API_KEY || "").trim();
 
   if (!apiKey) {
     return new Response(JSON.stringify({
@@ -127,7 +116,7 @@ export default async function handler(req) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey.trim()}`
+        "Authorization": `Bearer ${apiKey}`
       },
       body: JSON.stringify({
         model: "llama-3.1-8b-instant",
@@ -154,7 +143,6 @@ export default async function handler(req) {
       });
     }
 
-    // Transform OpenAI SSE format (`data: {"choices":[{"delta":{"content":"..."}}]}`) into raw text stream for chat.js
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
 
@@ -172,7 +160,7 @@ export default async function handler(req) {
                 controller.enqueue(encoder.encode(content));
               }
             } catch (e) {
-              // Ignore partial JSON chunks
+              // Ignore incomplete SSE chunks
             }
           }
         }

@@ -1,70 +1,50 @@
-// api/stt.js (Vercel Serverless Function Proxy for Faster-Whisper Local STT)
+// api/stt.js - Proxy for Faster-Whisper Audio Transcription
 
-const LOCALTUNNEL_URL = process.env.LOCAL_BACKEND_URL || "https://tati-voice-ai-backend.loca.lt";
-
-// Disable Vercel's default body parser so multipart/form-data audio streams intact
 export const config = {
-  api: {
-    bodyParser: false,
-  },
+  runtime: 'edge',
 };
 
-export default async function handler(req, res) {
-  // CORS Headers for Vercel Proxying
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Bypass-Tunnel-Reminder");
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Bypass-Tunnel-Reminder",
+};
 
+export default async function handler(req) {
   if (req.method === "OPTIONS") {
-    return res.status(200).end();
+    return new Response(null, { status: 200, headers: corsHeaders });
   }
 
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+    return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      status: 405,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
+  const backendUrl = (process.env.LOCAL_BACKEND_URL || "https://tati-voice-ai-backend.loca.lt").replace(/\/$/, "");
+  const contentType = req.headers.get("content-type") || "";
+
   try {
-    // Read raw incoming multipart stream into Buffer
-    const chunks = [];
-    for await (const chunk of req) {
-      chunks.push(chunk);
-    }
-    const rawBody = Buffer.concat(chunks);
-
-    const controller = new AbortController();
-    // 5-second timeout guard for Faster-Whisper processing over tunnel
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-    const localRes = await fetch(`${LOCALTUNNEL_URL}/api/stt`, {
+    const response = await fetch(`${backendUrl}/api/stt`, {
       method: "POST",
       headers: {
-        "Content-Type": req.headers["content-type"] || "multipart/form-data",
+        "Content-Type": contentType,
         "Bypass-Tunnel-Reminder": "true"
       },
-      body: rawBody,
-      signal: controller.signal
+      body: req.body
     });
 
-    clearTimeout(timeoutId);
+    const data = await response.json();
 
-    if (!localRes.ok) {
-      const errText = await localRes.text().catch(() => "");
-      console.warn(`⚠️ Local Whisper STT returned HTTP ${localRes.status}: ${errText}`);
-      return res.status(localRes.status).json({
-        error: `Local Faster-Whisper engine returned status ${localRes.status}`
-      });
-    }
-
-    const data = await localRes.json();
-    return res.status(200).json({
-      transcript: data.transcript || data.text || "",
-      provider: data.provider || "faster_whisper_local"
+    return new Response(JSON.stringify(data), {
+      status: response.status,
+      headers: { ...corsHeaders, "Content-Type": "application/json" }
     });
-
   } catch (err) {
-    console.warn("⚠️ Local Faster-Whisper tunnel unreachable or timed out:", err.message);
-    return res.status(503).json({
-      error: "Local Faster-Whisper STT engine unavailable over tunnel."
+    return new Response(JSON.stringify({ error: `STT Proxy Error: ${err.message}` }), {
+      status: 502,
+      headers: { ...corsHeaders, "Content-Type": "application/json" }
     });
   }
 }
