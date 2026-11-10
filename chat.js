@@ -1,6 +1,6 @@
 /**
- * Tati Voice AI Platform - Fail-Safe Cloud & Mobile chat.js
- * Guarantees zero freezing, instant UI reset on network stall, and safe TTS failover.
+ * Tati Voice AI Platform - chat.js
+ * Enforced Kokoro-82M TTS with Vercel Serverless Routing & STT Fallback
  */
 
 const getBaseUrl = () => {
@@ -11,7 +11,7 @@ const getBaseUrl = () => {
   if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
     return "http://127.0.0.1:8000";
   }
-  return ""; 
+  return "https://tati-voice-ai-backend.loca.lt"; 
 };
 
 const API_BASE_URL = getBaseUrl();
@@ -26,7 +26,7 @@ const SpeechRecognition =
   typeof window !== "undefined" && 
   (window.SpeechRecognition || window.webkitSpeechRecognition);
 
-// Global state
+// Global persistent state
 window._currentAudio = null;
 window._currentAudioSource = null;
 window._currentUtterance = null;
@@ -34,11 +34,14 @@ window._persistentAudio = (typeof window !== "undefined") ? new Audio() : null;
 window._audioUnlocked = false;
 
 let activeWakeWordRecognition = null;
+let activeListeningRecognition = null;
 let isSpeakingState = false;
 let isRecordingState = false;
 let activeMediaRecorder = null;
 let recordedChunks = [];
 let recordingTimeout = null;
+let listeningTimeout = null;
+let speakingSafetyTimer = null;
 
 let vadAudioCtx = null;
 let vadAnalyser = null;
@@ -60,13 +63,49 @@ function cleanupVAD() {
   vadAnalyser = null;
 }
 
-// --- Fail-Safe In-Browser Kokoro Loader (with 4s Timeout) ---
-async function getInBrowserKokoroWithTimeout(timeoutMs = 4000) {
+function updateResponseTextUI(text) {
+  if (typeof document === "undefined") return;
+
+  const selectors = ['#subtitle-box', '#response-text', '.subtitle-text', '.welcome-text'];
+  let updated = false;
+
+  for (const selector of selectors) {
+    const el = document.querySelector(selector);
+    if (el) {
+      el.textContent = text;
+      updated = true;
+      break;
+    }
+  }
+
+  if (!updated) {
+    const allDivs = document.querySelectorAll('div, p, span');
+    for (const div of allDivs) {
+      if (div.children.length === 0 && div.textContent && (div.textContent.includes('Welcome to Tati') || div.textContent.includes('I captured your query') || div.textContent.includes('Say Hey Tati'))) {
+        div.textContent = text;
+        break;
+      }
+    }
+  }
+}
+
+function updateStatusUI(statusText, visualState = '') {
+  const statusLabel = document.getElementById('status-label') || document.querySelector('.status-text');
+  const orb = document.getElementById('orb-button') || document.querySelector('.orb-container');
+
+  if (statusLabel) statusLabel.textContent = statusText;
+  if (orb && visualState) {
+    orb.setAttribute('data-state', visualState);
+  }
+}
+
+// --- In-Browser Kokoro Loader with 45s Initial Download Allowance ---
+async function getInBrowserKokoroWithTimeout(timeoutMs = 45000) {
   if (inBrowserKokoroInstance) return inBrowserKokoroInstance;
+  
   if (inBrowserKokoroLoading) {
-    // Wait briefly if already loading
     let checkCount = 0;
-    while (inBrowserKokoroLoading && checkCount < 20) {
+    while (inBrowserKokoroLoading && checkCount < 150) {
       await new Promise(r => setTimeout(r, 200));
       if (inBrowserKokoroInstance) return inBrowserKokoroInstance;
       checkCount++;
@@ -74,9 +113,10 @@ async function getInBrowserKokoroWithTimeout(timeoutMs = 4000) {
   }
 
   inBrowserKokoroLoading = true;
+  updateStatusUI("DOWNLOADING KOKORO (45MB)...", "thinking");
 
   const loadPromise = (async () => {
-    console.log("⚡ Fetching In-Browser Kokoro ONNX engine...");
+    console.log("⚡ Fetching Kokoro ONNX model weights into browser storage...");
     const { KokoroTTS } = await import("https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm");
     const tts = await KokoroTTS.from_pretrained(
       "onnx-community/Kokoro-82M-ONNX",
@@ -92,18 +132,16 @@ async function getInBrowserKokoroWithTimeout(timeoutMs = 4000) {
   );
 
   try {
-    const result = await Promise.race([loadPromise, timeoutPromise]);
-    return result;
+    return await Promise.race([loadPromise, timeoutPromise]);
   } catch (err) {
     inBrowserKokoroLoading = false;
-    console.warn("⚠️ Browser Kokoro ONNX load failed or timed out:", err.message);
+    console.warn("⚠️ Kokoro ONNX load failed or timed out:", err.message);
     throw err;
   }
 }
 
 // --- HTTPS Mixed Content Backend Guard ---
 async function isLocalBackendAlive() {
-  // If running on HTTPS (Vercel), standard HTTP localhost is blocked by Chrome Mixed Content security
   if (typeof window !== "undefined" && window.location.protocol === "https:" && (!API_BASE_URL || API_BASE_URL.startsWith("http://"))) {
     isLocalBackendActiveCache = false;
     return false;
@@ -114,7 +152,11 @@ async function isLocalBackendAlive() {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 300);
-    const res = await fetch(`${API_BASE_URL}/`, { method: "GET", signal: controller.signal });
+    const res = await fetch(`${API_BASE_URL}/`, { 
+      method: "GET", 
+      headers: { "Bypass-Tunnel-Reminder": "true" },
+      signal: controller.signal 
+    });
     clearTimeout(timeoutId);
     isLocalBackendActiveCache = res.ok;
     return res.ok;
@@ -135,18 +177,18 @@ export function hideWelcomeModal() {
   });
 }
 
-function updateStatusUI(statusText, visualState = '') {
-  const statusLabel = document.getElementById('status-label') || document.querySelector('.status-text');
-  const orb = document.getElementById('orb-button') || document.querySelector('.orb-container');
-
-  if (statusLabel) statusLabel.textContent = statusText;
-  if (orb && visualState) {
-    orb.setAttribute('data-state', visualState);
-  }
-}
-
 export function prewarmAudio() {
   if (typeof window === "undefined") return;
+
+  try {
+    const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+    if (AudioCtxClass) {
+      if (!window._audioCtx) window._audioCtx = new AudioCtxClass();
+      if (window._audioCtx.state === 'suspended') {
+        window._audioCtx.resume();
+      }
+    }
+  } catch (e) {}
 
   if (window._persistentAudio && !window._audioUnlocked) {
     try {
@@ -160,18 +202,15 @@ export function prewarmAudio() {
       }
     } catch (e) {}
   }
-
-  try {
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    if (AudioCtx) {
-      if (!window._audioCtx) window._audioCtx = new AudioCtx();
-      if (window._audioCtx.state === 'suspended') window._audioCtx.resume();
-    }
-  } catch (e) {}
 }
 
 export function stopAudioPlayback() {
   isSpeakingState = false;
+
+  if (speakingSafetyTimer) {
+    clearTimeout(speakingSafetyTimer);
+    speakingSafetyTimer = null;
+  }
 
   if (window._currentAudioSource) {
     try {
@@ -282,6 +321,14 @@ export function stopLocalWhisperRecording() {
 async function startLocalWhisperRecording(onResultCallback, onErrorCallback) {
   if (stopLocalWhisperRecording()) return;
 
+  const backendAvailable = await isLocalBackendAlive();
+
+  if (!backendAvailable) {
+    if (onErrorCallback) onErrorCallback("Online mode requires Web Speech API supported browser.");
+    updateStatusUI("SPEECH NOT SUPPORTED", "error");
+    return;
+  }
+
   try {
     isRecordingState = true;
     updateStatusUI("LISTENING...", "listening");
@@ -381,50 +428,95 @@ async function startLocalWhisperRecording(onResultCallback, onErrorCallback) {
 }
 
 export function listenToVoice(onResultCallback, onErrorCallback, lang = "en-US") {
+  // Toggle off if already actively recording/listening
+  if (isRecordingState || activeListeningRecognition) {
+    if (listeningTimeout) clearTimeout(listeningTimeout);
+    if (activeListeningRecognition) {
+      try { activeListeningRecognition.stop(); } catch (e) {}
+      activeListeningRecognition = null;
+    }
+    stopLocalWhisperRecording();
+    isRecordingState = false;
+    updateStatusUI("READY", "idle");
+    return { start: () => {}, stop: () => {} };
+  }
+
   stopAudioPlayback();
   stopWakeWordListener();
   prewarmAudio();
 
   const localStop = () => stopLocalWhisperRecording();
 
-  if (isRecordingState) {
-    stopLocalWhisperRecording();
-    return { start: () => {}, stop: localStop };
-  }
-
   if (!navigator.onLine || !SpeechRecognition) {
     startLocalWhisperRecording(onResultCallback, onErrorCallback);
     return { start: () => {}, stop: localStop };
   }
 
-  const recognition = new SpeechRecognition();
-  recognition.continuous = false;
-  recognition.interimResults = false;
-  recognition.lang = lang;
-
-  recognition.onresult = (event) => {
-    const transcript = event.results[0][0].transcript;
-    if (onResultCallback) onResultCallback(transcript);
-  };
-
-  recognition.onerror = () => {
-    startLocalWhisperRecording(onResultCallback, onErrorCallback);
-  };
-
   try {
-    recognition.start();
+    isRecordingState = true;
     updateStatusUI("LISTENING...", "listening");
-  } catch (e) {
-    startLocalWhisperRecording(onResultCallback, onErrorCallback);
-  }
 
-  return {
-    start: () => { try { recognition.start(); } catch (e) {} },
-    stop: () => { 
-      try { recognition.stop(); } catch (e) {} 
-      stopLocalWhisperRecording();
-    }
-  };
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = lang;
+
+    activeListeningRecognition = recognition;
+
+    // 7-Second Safety Timeout Guard to prevent hanging on "LISTENING..."
+    listeningTimeout = setTimeout(() => {
+      if (isRecordingState && activeListeningRecognition === recognition) {
+        console.warn("⚠️ Speech recognition safety timeout triggered.");
+        try { recognition.stop(); } catch (e) {}
+        activeListeningRecognition = null;
+        isRecordingState = false;
+        updateStatusUI("NO SPEECH DETECTED", "idle");
+        setTimeout(() => updateStatusUI("READY", "idle"), 1500);
+      }
+    }, 7000);
+
+    recognition.onresult = (event) => {
+      if (listeningTimeout) clearTimeout(listeningTimeout);
+      isRecordingState = false;
+      activeListeningRecognition = null;
+      const transcript = event.results[0][0].transcript;
+      if (onResultCallback) onResultCallback(transcript);
+    };
+
+    recognition.onerror = () => {
+      if (listeningTimeout) clearTimeout(listeningTimeout);
+      activeListeningRecognition = null;
+      startLocalWhisperRecording(onResultCallback, onErrorCallback);
+    };
+
+    recognition.onend = () => {
+      if (listeningTimeout) clearTimeout(listeningTimeout);
+      if (isRecordingState && activeListeningRecognition === recognition) {
+        isRecordingState = false;
+        activeListeningRecognition = null;
+        updateStatusUI("READY", "idle");
+      }
+    };
+
+    recognition.start();
+
+    return {
+      start: () => { try { recognition.start(); } catch (e) {} },
+      stop: () => { 
+        if (listeningTimeout) clearTimeout(listeningTimeout);
+        try { recognition.stop(); } catch (e) {} 
+        activeListeningRecognition = null;
+        isRecordingState = false;
+        stopLocalWhisperRecording();
+        updateStatusUI("READY", "idle");
+      }
+    };
+  } catch (e) {
+    if (listeningTimeout) clearTimeout(listeningTimeout);
+    activeListeningRecognition = null;
+    startLocalWhisperRecording(onResultCallback, onErrorCallback);
+    return { start: () => {}, stop: localStop };
+  }
 }
 
 function mapVoiceToKokoro(presetName) {
@@ -465,8 +557,16 @@ function fallbackWebSpeech(text, onEndCallback, lang, rate) {
     utterance.voice = voices.find(v => v.lang.startsWith(lang.split('-')[0])) || voices[0];
   }
 
-  utterance.onend = () => { if (onEndCallback) onEndCallback(); };
-  utterance.onerror = () => { if (onEndCallback) onEndCallback(); };
+  utterance.onend = () => { 
+    isSpeakingState = false;
+    updateStatusUI("READY", "idle");
+    if (onEndCallback) onEndCallback(); 
+  };
+  utterance.onerror = () => { 
+    isSpeakingState = false;
+    updateStatusUI("READY", "idle");
+    if (onEndCallback) onEndCallback(); 
+  };
 
   window._currentUtterance = utterance;
   isSpeakingState = true;
@@ -484,9 +584,16 @@ export async function speakResponse(
 ) {
   stopAudioPlayback();
   stopWakeWordListener();
+  prewarmAudio();
+
+  updateResponseTextUI(text);
   updateStatusUI("SYNTHESIZING VOICE...", "thinking");
 
   const handleSpeechCompletion = () => {
+    if (speakingSafetyTimer) {
+      clearTimeout(speakingSafetyTimer);
+      speakingSafetyTimer = null;
+    }
     isSpeakingState = false;
     updateStatusUI("READY", "idle");
     if (onEndCallback) {
@@ -496,9 +603,16 @@ export async function speakResponse(
     }
   };
 
+  speakingSafetyTimer = setTimeout(() => {
+    if (isSpeakingState) {
+      console.warn("⚠️ Audio playback timer safety reset triggered.");
+      handleSpeechCompletion();
+    }
+  }, 12000);
+
   const backendAvailable = await isLocalBackendAlive();
 
-  // 1. LOCAL BACKEND: Python FastAPI Kokoro-82M
+  // 1. LOCAL MAC BACKEND MODE: Python FastAPI Kokoro-82M
   if (backendAvailable) {
     try {
       const kokoroVoice = mapVoiceToKokoro(preferredVoiceName);
@@ -541,13 +655,13 @@ export async function speakResponse(
       source.start(0);
       return;
     } catch (error) {
-      console.warn("⚠️ Local Kokoro backend unavailable. Trying Browser Kokoro ONNX...", error);
+      console.warn("⚠️ Local Kokoro backend unreachable. Trying Browser Kokoro ONNX...", error);
     }
   }
 
-  // 2. VERCEL ONLINE / LAPTOP-OFF MODE: In-Browser Kokoro ONNX with Timeout
+  // 2. VERCEL ONLINE / LAPTOP-OFF MODE: In-Browser Kokoro ONNX
   try {
-    const tts = await getInBrowserKokoroWithTimeout(4000); // 4-second timeout limit
+    const tts = await getInBrowserKokoroWithTimeout(45000);
     const kokoroVoice = mapVoiceToKokoro(preferredVoiceName);
     
     const audioResult = await tts.generate(text, { voice: kokoroVoice });
@@ -575,12 +689,12 @@ export async function speakResponse(
     source.start(0);
 
   } catch (browserKokoroErr) {
-    console.warn("❌ Browser Kokoro ONNX error/timeout. Falling back to native browser speech:", browserKokoroErr.message);
+    console.warn("❌ Browser Kokoro ONNX fallback to native browser speech:", browserKokoroErr.message);
     fallbackWebSpeech(text, handleSpeechCompletion, lang, rate);
   }
 }
 
-// --- Fail-Safe Dual-Engine LLM Query Pipeline ---
+// --- Dual-Engine LLM Query Pipeline ---
 export async function sendVoiceQuery(
   transcript, 
   autoSpeak = true, 
@@ -594,9 +708,11 @@ export async function sendVoiceQuery(
 
   if (autoSpeak) prewarmAudio();
   updateStatusUI("THINKING...", "thinking");
+  updateResponseTextUI(`" ${transcript.trim()} "`);
 
   const backendAvailable = await isLocalBackendAlive();
 
+  // 1. LOCAL MODE (Laptop Open): FastAPI -> Ollama
   if (backendAvailable) {
     try {
       const response = await fetch(`${API_BASE_URL}/api/chat`, {
@@ -626,50 +742,25 @@ export async function sendVoiceQuery(
         };
       }
     } catch (err) {
-      console.warn("⚠️ Local chat endpoint unreachable, using online Groq...");
+      console.warn("⚠️ Local chat endpoint unreachable, using Vercel serverless cloud...");
     }
   }
 
-  // ONLINE MODE (Vercel Cloud): Route prompt directly to Groq Cloud API
-  const groqKey = 
-    (typeof process !== "undefined" && process.env && (process.env.NEXT_PUBLIC_GROQ_API_KEY || process.env.REACT_APP_GROQ_API_KEY)) || 
-    window.GROQ_API_KEY;
-
-  if (!groqKey) {
-    const offlineMsg = "Groq API key not found. Please add NEXT_PUBLIC_GROQ_API_KEY in Vercel settings.";
-    updateStatusUI("GROQ KEY MISSING", "error");
-    if (autoSpeak) speakResponse(offlineMsg, null, preferredVoiceName, lang, rate);
-    throw new Error(offlineMsg);
-  }
-
+  // 2. ONLINE MODE (Vercel Cloud): Route query via Vercel Serverless Function `/api/chat`
   try {
-    const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const cloudRes = await fetch("/api/chat", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${groqKey.trim()}`
-      },
-      body: JSON.stringify({
-        model: "llama-3.1-8b-instant",
-        messages: [
-          {
-            role: "system",
-            content: "You are Tati Voice AI, speaking directly to a user. Answer concisely in exactly 2 warm, clear sentences."
-          },
-          { role: "user", content: transcript.trim() }
-        ],
-        max_tokens: 150,
-        temperature: 0.4
-      })
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: transcript.trim() })
     });
 
-    if (!groqRes.ok) {
-      const errJson = await groqRes.json().catch(() => ({}));
-      throw new Error(errJson.error?.message || `Groq API status ${groqRes.status}`);
+    if (!cloudRes.ok) {
+      const errJson = await cloudRes.json().catch(() => ({}));
+      throw new Error(errJson.error || `Vercel Cloud Chat status ${cloudRes.status}`);
     }
 
-    const groqData = await groqRes.json();
-    const responseText = groqData.choices[0]?.message?.content || "No response received.";
+    const cloudData = await cloudRes.json();
+    const responseText = cloudData.response_text || "No response received.";
 
     if (autoSpeak && responseText) {
       speakResponse(responseText, null, preferredVoiceName, lang, rate);
@@ -679,12 +770,13 @@ export async function sendVoiceQuery(
       responseText: responseText,
       databaseHits: 0,
       hits: [],
-      provider: "groq_cloud_vercel"
+      provider: cloudData.provider || "groq_vercel_cloud"
     };
 
   } catch (error) {
     console.error("Online Query error:", error);
     updateStatusUI("ERROR OCCURRED", "error");
+    updateResponseTextUI(`Error: ${error.message}`);
     setTimeout(() => updateStatusUI("READY", "idle"), 3000);
     throw error;
   }
