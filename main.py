@@ -57,8 +57,8 @@ def get_active_groq_model() -> str:
         print(f"📋 Models accessible under your Groq key: {available_ids}")
         
         preferred_candidates = [
-            "llama-3.1-8b-instant",
             "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
             "qwen/qwen3.8-27b",
             "openai/gpt-oss-20b",
             "allam-2-7b"
@@ -81,7 +81,7 @@ def get_active_groq_model() -> str:
     except Exception as e:
         print(f"⚠️ Error fetching Groq models list: {e}")
         
-    return "llama-3.1-8b-instant"
+    return "llama-3.3-70b-versatile"
 
 # Import Kokoro Neural TTS Pipeline
 try:
@@ -202,7 +202,7 @@ def broader_meili_search(query_text: str, max_hits: int = 5):
 def query_ollama_local(prompt_text: str) -> str:
     """Queries local Ollama using dynamic timeouts and candidate model fallbacks."""
     online = is_online()
-    ollama_timeout = 10 if online else 120
+    ollama_timeout = 30 if online else 120
     url = "http://127.0.0.1:11434/api/generate"
     
     for model_name in ["llama3:latest", "llama3"]:
@@ -249,7 +249,7 @@ def generate_ollama_stream(prompt_text: str):
         "model": "llama3:latest",
         "prompt": prompt_text,
         "stream": True,
-        "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "2m"),
+        "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "24h"),
         "options": {
             "num_ctx": 1024,
             "num_predict": 120,
@@ -265,7 +265,7 @@ def generate_ollama_stream(prompt_text: str):
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with urllib.request.urlopen(req, timeout=30) as response:
             for line in response:
                 if line:
                     decoded = line.decode("utf-8").strip()
@@ -373,9 +373,13 @@ def generate_local_neural_speech(req: TTSRequest):
     if tts_pipeline is None:
         raise HTTPException(status_code=500, detail="Kokoro TTS pipeline is not initialized.")
     
+    clean_text = req.text.strip() if req.text else ""
+    if not clean_text:
+        raise HTTPException(status_code=400, detail="Text cannot be empty for Kokoro TTS generation.")
+    
     try:
         generator = tts_pipeline(
-            req.text, 
+            clean_text, 
             voice=req.voice, 
             speed=req.speed, 
             split_pattern=r'\n+'
@@ -396,6 +400,8 @@ def generate_local_neural_speech(req: TTSRequest):
         buffer.seek(0)
 
         return StreamingResponse(buffer, media_type="audio/wav")
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"❌ Kokoro Neural TTS Generation Error: {e}")
         raise HTTPException(status_code=500, detail=f"Kokoro synthesis failed: {str(e)}")
