@@ -1,4 +1,4 @@
-// api/tts.js - Proxy for Kokoro-82M Neural Audio Synthesis
+// api/tts.js - Vercel Edge Proxy for Local Kokoro TTS Engine
 
 export const config = {
   runtime: 'edge',
@@ -22,37 +22,65 @@ export default async function handler(req) {
     });
   }
 
-  const backendUrl = (process.env.LOCAL_BACKEND_URL || "https://tati-voice-ai-backend.loca.lt").replace(/\/$/, "");
+  const backendUrl = (process.env.LOCAL_BACKEND_URL || "").replace(/\/$/, "");
+
+  if (!backendUrl) {
+    return new Response(JSON.stringify({ error: "LOCAL_BACKEND_URL is not set on Vercel environment." }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
 
   try {
     const body = await req.json();
+    const text = (body.text || "").trim();
 
-    const response = await fetch(`${backendUrl}/api/tts`, {
+    if (!text) {
+      return new Response(JSON.stringify({ error: "Text payload is required for TTS." }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const localResponse = await fetch(`${backendUrl}/api/tts`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Bypass-Tunnel-Reminder": "true"
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify({
+        text: text,
+        voice: body.voice || "af_heart",
+        speed: body.speed || 1.0
+      })
     });
 
-    if (!response.ok) {
-      return new Response(JSON.stringify({ error: "Kokoro TTS backend error" }), {
-        status: response.status,
+    if (!localResponse.ok) {
+      const errText = await localResponse.text().catch(() => "");
+      console.error(`Local Kokoro TTS Backend returned HTTP ${localResponse.status}: ${errText}`);
+      return new Response(JSON.stringify({
+        error: `Kokoro TTS Local Engine HTTP ${localResponse.status}`,
+        details: errText
+      }), {
+        status: localResponse.status,
         headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
     }
 
-    return new Response(response.body, {
+    const audioBuffer = await localResponse.arrayBuffer();
+
+    return new Response(audioBuffer, {
       status: 200,
       headers: {
         ...corsHeaders,
-        "Content-Type": "audio/wav",
+        "Content-Type": localResponse.headers.get("content-type") || "audio/wav",
+        "Content-Length": audioBuffer.byteLength.toString(),
         "Cache-Control": "no-cache"
       }
     });
+
   } catch (err) {
-    return new Response(JSON.stringify({ error: `TTS Proxy Error: ${err.message}` }), {
+    return new Response(JSON.stringify({ error: `TTS Proxy Exception: ${err.message}` }), {
       status: 502,
       headers: { ...corsHeaders, "Content-Type": "application/json" }
     });
