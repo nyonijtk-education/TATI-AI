@@ -49,11 +49,11 @@ export default async function handler(req) {
     });
   }
 
-  // 4. PRIMARY: Local Backend via Tunnel (Streaming with 30s Connection Timeout)
+  // 4. PRIMARY: Local Backend via Tunnel (Streaming with 6s Connection Timeout to beat Vercel 10s Gateway Limit)
   if (backendUrl) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s processing window for local Ollama
+      const timeoutId = setTimeout(() => controller.abort(), 6000); // 6s threshold prevents Vercel 504 Gateway Timeout
 
       const localResponse = await fetch(`${backendUrl}/api/chat`, {
         method: "POST",
