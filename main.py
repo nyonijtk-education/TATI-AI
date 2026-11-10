@@ -50,25 +50,25 @@ def get_active_groq_model() -> str:
     """Dynamically queries Groq to find supported text generation models for the current API key."""
     if not groq_client:
         return ""
-    
+
     try:
         response = groq_client.models.list()
         available_ids = [m.id for m in response.data]
         print(f"📋 Models accessible under your Groq key: {available_ids}")
-        
+
         preferred_candidates = [
-            "llama-3.3-70b-versatile",
             "llama-3.1-8b-instant",
+            "llama-3.3-70b-versatile",
             "qwen/qwen3.8-27b",
             "openai/gpt-oss-20b",
             "allam-2-7b"
         ]
-        
+
         for candidate in preferred_candidates:
             if candidate in available_ids:
                 print(f"🎯 Selected active model: {candidate}")
                 return candidate
-                
+
         text_models = [
             m_id for m_id in available_ids 
             if not any(x in m_id.lower() for x in ["whisper", "orpheus", "guard"])
@@ -77,11 +77,11 @@ def get_active_groq_model() -> str:
             selected = text_models[0]
             print(f"🎯 Fallback model selected: {selected}")
             return selected
-            
+
     except Exception as e:
         print(f"⚠️ Error fetching Groq models list: {e}")
-        
-    return "llama-3.3-70b-versatile"
+
+    return "llama-3.1-8b-instant"
 
 # Import Kokoro Neural TTS Pipeline
 try:
@@ -200,11 +200,10 @@ def broader_meili_search(query_text: str, max_hits: int = 5):
     return hits
 
 def query_ollama_local(prompt_text: str) -> str:
-    """Queries local Ollama using dynamic timeouts and candidate model fallbacks."""
-    online = is_online()
-    ollama_timeout = 30 if online else 120
+    """Queries local Ollama using an extended 60s timeout window for local generation."""
+    ollama_timeout = 60
     url = "http://127.0.0.1:11434/api/generate"
-    
+
     for model_name in ["llama3:latest", "llama3"]:
         payload = json.dumps({
             "model": model_name,
@@ -265,7 +264,7 @@ def generate_ollama_stream(prompt_text: str):
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=60) as response:
             for line in response:
                 if line:
                     decoded = line.decode("utf-8").strip()
@@ -280,11 +279,11 @@ def generate_ollama_stream(prompt_text: str):
 def query_groq_fallback(system_instruction: str, user_prompt: str):
     if not groq_client:
         return "", "GROQ_API_KEY is not set or groq_client failed to initialize."
-    
+
     model_name = get_active_groq_model()
     if not model_name:
         return "", "No accessible text models found for this Groq API key."
-    
+
     try:
         completion = groq_client.chat.completions.create(
             messages=[
@@ -295,13 +294,13 @@ def query_groq_fallback(system_instruction: str, user_prompt: str):
             max_tokens=150,
             temperature=0.4
         )
-        
+
         raw_content = completion.choices[0].message.content if completion.choices else None
         if raw_content:
             formatted = format_text_for_natural_speech(raw_content)
             if formatted:
                 return formatted, ""
-                
+
         return "", f"Model '{model_name}' returned empty or null content."
     except Exception as e:
         err_msg = str(e) or repr(e)
@@ -332,7 +331,7 @@ async def transcribe_audio_offline(file: UploadFile = File(...)):
             status_code=500, 
             detail="Faster-Whisper STT engine is not installed or initialized on the server."
         )
-    
+
     temp_path = None
     try:
         audio_bytes = await file.read()
@@ -352,7 +351,7 @@ async def transcribe_audio_offline(file: UploadFile = File(...)):
         segments, _ = stt_model.transcribe(temp_path, beam_size=5)
         transcript = " ".join([segment.text for segment in segments]).strip()
         print(f"📝 STT Result: '{transcript}'")
-        
+
         return {"transcript": transcript, "provider": "faster_whisper_local"}
 
     except HTTPException:
@@ -360,7 +359,7 @@ async def transcribe_audio_offline(file: UploadFile = File(...)):
     except Exception as e:
         print(f"❌ Local Whisper Transcription Error:\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Whisper transcription failed: {str(e)}")
-    
+
     finally:
         if temp_path and os.path.exists(temp_path):
             try:
@@ -372,11 +371,11 @@ async def transcribe_audio_offline(file: UploadFile = File(...)):
 def generate_local_neural_speech(req: TTSRequest):
     if tts_pipeline is None:
         raise HTTPException(status_code=500, detail="Kokoro TTS pipeline is not initialized.")
-    
+
     clean_text = req.text.strip() if req.text else ""
     if not clean_text:
         raise HTTPException(status_code=400, detail="Text cannot be empty for Kokoro TTS generation.")
-    
+
     try:
         generator = tts_pipeline(
             clean_text, 
@@ -384,15 +383,15 @@ def generate_local_neural_speech(req: TTSRequest):
             speed=req.speed, 
             split_pattern=r'\n+'
         )
-        
+
         audio_segments = []
         for gs, ps, audio in generator:
             if audio is not None and len(audio) > 0:
                 audio_segments.append(audio)
-        
+
         if not audio_segments:
             raise HTTPException(status_code=500, detail="No audio generated by Kokoro.")
-            
+
         full_audio = np.concatenate(audio_segments)
 
         buffer = io.BytesIO()
@@ -414,7 +413,7 @@ def chat_stream_endpoint(req: ChatRequest):
 
     hits = broader_meili_search(query_text, max_hits=5)
     system_instructions = "You are Tati Voice AI, an Earth science research assistant. Answer concisely in 2 clear sentences."
-    
+
     if hits:
         context_items = [f"Record {idx}:\nTitle: {h.get('title')}\nSummary: {h.get('abstract', '')}\n" for idx, h in enumerate(hits, 1)]
         full_prompt = f"{system_instructions}\n\nContext:\n{''.join(context_items)}\n\nUser Question: {query_text}\nAnswer:"
@@ -438,7 +437,7 @@ def chat_endpoint(req: ChatRequest):
         "You are Tati Voice AI, an Earth science research assistant speaking directly to a user. "
         "Answer the question concisely in exactly 2 warm, clear sentences."
     )
-    
+
     if hits:
         context_items = []
         for idx, item in enumerate(hits, 1):

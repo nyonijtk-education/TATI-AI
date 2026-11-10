@@ -1,7 +1,7 @@
 // api/chat.js - Streaming Vercel Serverless / Edge Function Proxy for Tati Voice AI
 
 export const config = {
-  runtime: 'edge', // Edge runtime for ultra-low latency streaming without serverless response buffering
+  runtime: 'edge',
 };
 
 const corsHeaders = {
@@ -49,11 +49,11 @@ export default async function handler(req) {
     });
   }
 
-  // 4. PRIMARY: Local Backend via Tunnel (Streaming with 6s Connection Timeout to beat Vercel 10s Gateway Limit)
+  // 4. PRIMARY: Local Backend via Tunnel (Streaming with 25s Timeout for Local Ollama Processing)
   if (backendUrl) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 6000); // 6s threshold prevents Vercel 504 Gateway Timeout
+      const timeoutId = setTimeout(() => controller.abort(), 25000); // Extended 25s window for local Ollama
 
       const localResponse = await fetch(`${backendUrl}/api/chat`, {
         method: "POST",
@@ -75,7 +75,6 @@ export default async function handler(req) {
       if (localResponse.ok && localResponse.body) {
         const contentType = localResponse.headers.get("content-type") || "";
 
-        // Streaming text response from local Ollama backend
         if (contentType.includes("text/event-stream") || contentType.includes("text/plain") || contentType.includes("application/x-ndjson")) {
           return new Response(localResponse.body, {
             status: 200,
@@ -88,7 +87,6 @@ export default async function handler(req) {
           });
         }
 
-        // Non-streaming JSON response from local Ollama backend
         const localData = await localResponse.json();
         const responseText = localData.response_text || localData.response || localData.reply || "";
 
@@ -104,24 +102,46 @@ export default async function handler(req) {
           });
         }
       } else {
-        console.warn(`⚠️ Tunnel HTTP ${localResponse.status}. Triggering Groq Cloud stream fallback...`);
+        console.warn(`⚠️ Tunnel HTTP ${localResponse.status}. Escalating to Groq Cloud fallback...`);
       }
     } catch (err) {
-      console.warn(`⚠️ Local Ollama backend offline/timeout: ${err.message}. Triggering Groq Cloud stream fallback...`);
+      console.warn(`⚠️ Local Ollama backend offline/timeout: ${err.message}. Triggering Groq fallback...`);
     }
   }
 
-  // 5. FALLBACK: Groq Cloud LPU Engine (~120ms TTFT Token Streaming with valid Model ID & key sanitization)
+  // 5. FALLBACK: Groq Cloud LPU Engine (With Dynamic Model Discovery)
   let apiKey = (process.env.GROQ_API_KEY || process.env.NEXT_PUBLIC_GROQ_API_KEY || "").trim();
-  apiKey = apiKey.replace(/^["']|["']$/g, ''); // Strip surrounding quotes if pasted into Vercel env
+  apiKey = apiKey.replace(/^["']|["']$/g, '');
 
   if (!apiKey) {
     return new Response(JSON.stringify({
-      error: "Local backend offline/timed out and GROQ_API_KEY missing from Vercel environment."
+      error: "Local backend offline/timed out and GROQ_API_KEY is missing from Vercel environment."
     }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" }
     });
+  }
+
+  // Dynamic Model Resolution
+  let selectedModel = "llama-3.1-8b-instant";
+  try {
+    const modelsRes = await fetch("https://api.groq.com/openai/v1/models", {
+      method: "GET",
+      headers: { "Authorization": `Bearer ${apiKey}` }
+    });
+    if (modelsRes.ok) {
+      const modelsData = await modelsRes.json();
+      const accessibleIds = (modelsData.data || []).map(m => m.id);
+      const preferred = ["llama-3.1-8b-instant", "llama3-8b-8192", "llama-3.3-70b-versatile", "mixtral-8x7b-32768", "gemma2-9b-it"];
+      const match = preferred.find(m => accessibleIds.includes(m));
+      if (match) {
+        selectedModel = match;
+      } else if (accessibleIds.length > 0) {
+        selectedModel = accessibleIds[0];
+      }
+    }
+  } catch (e) {
+    console.warn("Could not query Groq models list, defaulting to llama-3.1-8b-instant");
   }
 
   try {
@@ -132,7 +152,7 @@ export default async function handler(req) {
         "Authorization": `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
+        model: selectedModel,
         messages: [
           {
             role: "system",
@@ -156,7 +176,6 @@ export default async function handler(req) {
       });
     }
 
-    // Transform OpenAI SSE format (`data: {"choices":[{"delta":{"content":"..."}}]}`) into raw text stream
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
 
@@ -174,7 +193,7 @@ export default async function handler(req) {
                 controller.enqueue(encoder.encode(content));
               }
             } catch (e) {
-              // Ignore partial JSON chunks
+              // Ignore incomplete JSON chunks
             }
           }
         }
@@ -187,7 +206,7 @@ export default async function handler(req) {
         ...corsHeaders,
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache, no-transform",
-        "X-Response-Provider": "groq_vercel_cloud"
+        "X-Response-Provider": `groq_vercel_${selectedModel}`
       }
     });
 
