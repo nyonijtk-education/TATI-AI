@@ -65,6 +65,7 @@ class SpeechQueue {
       this.isPlaying = false;
       isSpeakingState = false;
       updateStatusUI("SAY 'HEY TATI'", "idle");
+      startWakeWordListener();
       return;
     }
 
@@ -514,7 +515,7 @@ async function speakSentenceChunk(text, preferredVoiceName = "af_heart", lang = 
   });
 }
 
-function fallbackWebSpeech(text, onEndCallback, lang, rate) {
+function fallbackWebSpeech(text, onEndCallback, lang = "en-US", rate = 1.0) {
   if (typeof window === "undefined" || !("speechSynthesis" in window)) {
     if (onEndCallback) onEndCallback();
     return;
@@ -532,8 +533,19 @@ function fallbackWebSpeech(text, onEndCallback, lang, rate) {
     utterance.voice = voices.find(v => v.lang.startsWith(lang.split('-')[0])) || voices[0];
   }
 
-  utterance.onend = () => { if (onEndCallback) onEndCallback(); };
-  utterance.onerror = () => { if (onEndCallback) onEndCallback(); };
+  let finished = false;
+  const finish = () => {
+    if (!finished) {
+      finished = true;
+      if (onEndCallback) onEndCallback();
+    }
+  };
+
+  utterance.onend = finish;
+  utterance.onerror = finish;
+
+  // Fallback safety timeout for Chrome SpeechSynthesis freeze issues
+  setTimeout(finish, 15000);
 
   window._currentUtterance = utterance;
   window.speechSynthesis.speak(utterance);
@@ -559,6 +571,7 @@ export async function speakResponse(
 
   const handleSpeechCompletion = () => {
     isSpeakingState = false;
+    updateStatusUI("SAY 'HEY TATI'", "idle");
     if (onEndCallback) {
       onEndCallback();
     } else {
@@ -566,11 +579,24 @@ export async function speakResponse(
     }
   };
 
+  if (!text || !text.trim()) {
+    handleSpeechCompletion();
+    return;
+  }
+
+  // Chunk long text into individual sentences to prevent /api/tts 504 timeouts
+  const sentences = text.match(/[^.!?]+[.!?]+|\s*[^.!?]+$/g) || [text];
+
   try {
-    await speakSentenceChunk(text, preferredVoiceName, lang, rate);
+    for (const sentence of sentences) {
+      const cleanSentence = sentence.trim();
+      if (cleanSentence) {
+        await speakSentenceChunk(cleanSentence, preferredVoiceName, lang, rate);
+      }
+    }
     handleSpeechCompletion();
   } catch (error) {
-    console.warn("⚠️ Web Audio amplification failed, falling back to Web Speech synthesis:", error);
+    console.warn("⚠️ Web Audio synthesis error, falling back to Web Speech synthesis:", error);
     fallbackWebSpeech(text, handleSpeechCompletion, lang, rate);
   }
 }
