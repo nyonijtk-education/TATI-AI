@@ -11,12 +11,13 @@ module.exports = {
       restart_delay: 2000,
     },
     {
-      name: "tati-localtunnel",
+      name: "tati-cloudflared",
       cwd: "/Users/nyoni/Tati Voice AI Platform",
-      script: "npx",
-      args: "localtunnel --port 8000 --subdomain tati-voice-ai-backend",
+      script: "cloudflared",
+      args: "tunnel --url http://127.0.0.1:8000",
+      interpreter: "none",
       autorestart: true,
-      restart_delay: 5000,
+      restart_delay: 3000,
     },
     {
       name: "tati-meilisearch",
