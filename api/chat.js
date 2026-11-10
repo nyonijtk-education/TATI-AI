@@ -1,7 +1,7 @@
 // api/chat.js - Streaming Vercel Serverless / Edge Function Proxy for Tati Voice AI
 
 export const config = {
-  runtime: 'edge',
+  runtime: 'edge', // Edge runtime for ultra-low latency streaming without serverless response buffering
 };
 
 const corsHeaders = {
@@ -11,10 +11,15 @@ const corsHeaders = {
 };
 
 export default async function handler(req) {
+  // 1. CORS Preflight
   if (req.method === "OPTIONS") {
-    return new Response(null, { status: 200, headers: corsHeaders });
+    return new Response(null, {
+      status: 200,
+      headers: corsHeaders,
+    });
   }
 
+  // 2. Validate Method
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ error: "Method not allowed" }), {
       status: 405,
@@ -22,6 +27,7 @@ export default async function handler(req) {
     });
   }
 
+  // 3. Parse Request Payload
   let body;
   try {
     body = await req.json();
@@ -34,7 +40,7 @@ export default async function handler(req) {
 
   const query = (body.prompt || body.transcript || "").trim();
   const language = body.language || "en-US";
-  const backendUrl = (process.env.LOCAL_BACKEND_URL || "https://tati-voice-ai-backend.loca.lt").replace(/\/$/, "");
+  const backendUrl = (process.env.LOCAL_BACKEND_URL || "").replace(/\/$/, "");
 
   if (!query) {
     return new Response(JSON.stringify({ error: "Query text is required." }), {
@@ -43,68 +49,75 @@ export default async function handler(req) {
     });
   }
 
-  // 1. Local Backend Tunnel Attempt (2.5s Timeout)
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2500);
+  // 4. PRIMARY: Local Backend via Tunnel (Streaming with 30s Connection Timeout)
+  if (backendUrl) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s processing window for local Ollama
 
-    const localResponse = await fetch(`${backendUrl}/api/chat`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Bypass-Tunnel-Reminder": "true"
-      },
-      body: JSON.stringify({
-        prompt: query,
-        transcript: query,
-        language: language,
-        stream: true
-      }),
-      signal: controller.signal
-    });
+      const localResponse = await fetch(`${backendUrl}/api/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Bypass-Tunnel-Reminder": "true"
+        },
+        body: JSON.stringify({
+          prompt: query,
+          transcript: query,
+          language: language,
+          stream: true
+        }),
+        signal: controller.signal
+      });
 
-    clearTimeout(timeoutId);
+      clearTimeout(timeoutId);
 
-    if (localResponse.ok && localResponse.body) {
-      const contentType = localResponse.headers.get("content-type") || "";
+      if (localResponse.ok && localResponse.body) {
+        const contentType = localResponse.headers.get("content-type") || "";
 
-      if (contentType.includes("text/event-stream") || contentType.includes("text/plain") || contentType.includes("application/x-ndjson")) {
-        return new Response(localResponse.body, {
-          status: 200,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache, no-transform",
-            "X-Response-Provider": "ollama_local_stream"
-          }
-        });
+        // Streaming text response from local Ollama backend
+        if (contentType.includes("text/event-stream") || contentType.includes("text/plain") || contentType.includes("application/x-ndjson")) {
+          return new Response(localResponse.body, {
+            status: 200,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache, no-transform",
+              "X-Response-Provider": "ollama_local_stream"
+            }
+          });
+        }
+
+        // Non-streaming JSON response from local Ollama backend
+        const localData = await localResponse.json();
+        const responseText = localData.response_text || localData.response || localData.reply || "";
+
+        if (responseText.trim()) {
+          return new Response(JSON.stringify({
+            response_text: responseText,
+            database_hits: localData.database_hits || 0,
+            hits: localData.hits || [],
+            provider: localData.provider || "ollama_local"
+          }), {
+            status: 200,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+      } else {
+        console.warn(`⚠️ Tunnel HTTP ${localResponse.status}. Triggering Groq Cloud stream fallback...`);
       }
-
-      const localData = await localResponse.json();
-      const responseText = localData.response_text || localData.response || localData.reply || "";
-
-      if (responseText.trim()) {
-        return new Response(JSON.stringify({
-          response_text: responseText,
-          database_hits: localData.database_hits || 0,
-          hits: localData.hits || [],
-          provider: localData.provider || "ollama_local"
-        }), {
-          status: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
-      }
+    } catch (err) {
+      console.warn(`⚠️ Local Ollama backend offline/timeout: ${err.message}. Triggering Groq Cloud stream fallback...`);
     }
-  } catch (err) {
-    console.warn("Local Ollama backend offline/timeout. Falling back to Groq Cloud stream...");
   }
 
-  // 2. Fallback: Groq Cloud LPU Token Streaming (~120ms TTFT)
-  const apiKey = (process.env.GROQ_API_KEY || process.env.NEXT_PUBLIC_GROQ_API_KEY || "").trim();
+  // 5. FALLBACK: Groq Cloud LPU Engine (~120ms TTFT Token Streaming with valid Model ID & key sanitization)
+  let apiKey = (process.env.GROQ_API_KEY || process.env.NEXT_PUBLIC_GROQ_API_KEY || "").trim();
+  apiKey = apiKey.replace(/^["']|["']$/g, ''); // Strip surrounding quotes if pasted into Vercel env
 
   if (!apiKey) {
     return new Response(JSON.stringify({
-      error: "Local backend offline and GROQ_API_KEY missing from Vercel environment."
+      error: "Local backend offline/timed out and GROQ_API_KEY missing from Vercel environment."
     }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -119,7 +132,7 @@ export default async function handler(req) {
         "Authorization": `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: "llama-3.1-8b-instant",
+        model: "llama-3.3-70b-versatile",
         messages: [
           {
             role: "system",
@@ -143,6 +156,7 @@ export default async function handler(req) {
       });
     }
 
+    // Transform OpenAI SSE format (`data: {"choices":[{"delta":{"content":"..."}}]}`) into raw text stream
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
 
@@ -160,7 +174,7 @@ export default async function handler(req) {
                 controller.enqueue(encoder.encode(content));
               }
             } catch (e) {
-              // Ignore incomplete SSE chunks
+              // Ignore partial JSON chunks
             }
           }
         }
