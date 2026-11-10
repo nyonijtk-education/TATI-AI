@@ -1,7 +1,6 @@
 /**
- * Tati Voice AI Platform - Optimized Mobile & Cloud chat.js
- * Features: Background Kokoro ONNX Pre-warming, 4-bit (q4) Quantization,
- * Fast 300ms Backend Ping & IndexedDB Persistent Caching.
+ * Tati Voice AI Platform - chat.js
+ * Enforced Kokoro-82M Dual Engine with Precise UI State Transitions
  */
 
 const getBaseUrl = () => {
@@ -46,7 +45,7 @@ let vadAudioCtx = null;
 let vadAnalyser = null;
 let vadCheckInterval = null;
 
-// Kokoro ONNX In-Browser Instance & Pre-warm State
+// Kokoro ONNX In-Browser Instance & Pre-warm Promise
 let inBrowserKokoroPromise = null;
 let isLocalBackendActiveCache = null;
 
@@ -62,26 +61,23 @@ function cleanupVAD() {
   vadAnalyser = null;
 }
 
-// --- Dynamic Kokoro ONNX Background Pre-Warming ---
+// --- In-Browser Kokoro-82M ONNX Initialization ---
 async function prewarmInBrowserKokoro() {
   if (inBrowserKokoroPromise) return inBrowserKokoroPromise;
 
   inBrowserKokoroPromise = (async () => {
     try {
-      console.log("⚡ Pre-warming In-Browser Kokoro-82M (q4 quantized, ~45MB)...");
+      console.log("⚡ Loading In-Browser Kokoro-82M ONNX Engine...");
       const { KokoroTTS } = await import("https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm");
       
       const tts = await KokoroTTS.from_pretrained(
-        "onnx-community/Kokoro-82M-v1.0-ONNX",
-        { 
-          dtype: "q4",      // 4-bit quantization: 55% smaller & faster on mobile
-          device: "wasm",
-        }
+        "onnx-community/Kokoro-82M-ONNX",
+        { dtype: "q8", device: "wasm" }
       );
-      console.log("✅ Kokoro-82M ONNX ready in browser cache.");
+      console.log("✅ Kokoro-82M ONNX ready in browser.");
       return tts;
     } catch (err) {
-      console.warn("⚠️ Background Kokoro ONNX pre-warm error:", err);
+      console.warn("⚠️ In-Browser Kokoro ONNX initialization error:", err);
       inBrowserKokoroPromise = null;
       throw err;
     }
@@ -90,18 +86,23 @@ async function prewarmInBrowserKokoro() {
   return inBrowserKokoroPromise;
 }
 
-// --- Ultra-Fast Non-Blocking Health Check (300ms) ---
+// --- Mixed-Content Guarded Health Check ---
 async function isLocalBackendAlive() {
+  // If running on HTTPS (e.g. Vercel), HTTP localhost is blocked by mixed-content security
+  if (typeof window !== "undefined" && window.location.protocol === "https:" && API_BASE_URL.startsWith("http://")) {
+    isLocalBackendActiveCache = false;
+    return false;
+  }
+
   if (isLocalBackendActiveCache !== null) {
-    // Re-verify in background without blocking current thread
-    fetch(`${API_BASE_URL}/`, { method: "GET", signal: AbortSignal.timeout(400) })
-      .then(r => { isLocalBackendActiveCache = r.ok; })
-      .catch(() => { isLocalBackendActiveCache = false; });
     return isLocalBackendActiveCache;
   }
 
   try {
-    const res = await fetch(`${API_BASE_URL}/`, { method: "GET", signal: AbortSignal.timeout(300) });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 200);
+    const res = await fetch(`${API_BASE_URL}/`, { method: "GET", signal: controller.signal });
+    clearTimeout(timeoutId);
     isLocalBackendActiveCache = res.ok;
     return res.ok;
   } catch (e) {
@@ -136,7 +137,6 @@ function updateStatusUI(statusText, visualState = '') {
 export function prewarmAudio() {
   if (typeof window === "undefined") return;
 
-  // Trigger background loading of browser Kokoro engine on first user touch
   prewarmInBrowserKokoro().catch(() => {});
 
   if (window._persistentAudio && !window._audioUnlocked) {
@@ -257,7 +257,7 @@ export function stopWakeWordListener() {
   }
 }
 
-// --- Fast RMS VAD Offline MediaRecorder STT ---
+// --- Offline MediaRecorder STT ---
 export function stopLocalWhisperRecording() {
   cleanupVAD();
   if (activeMediaRecorder && activeMediaRecorder.state === "recording") {
@@ -419,7 +419,6 @@ export function listenToVoice(onResultCallback, onErrorCallback, lang = "en-US")
   };
 }
 
-// --- Kokoro Voice Selection Map ---
 function mapVoiceToKokoro(presetName) {
   switch (presetName) {
     case "samantha":
@@ -440,7 +439,7 @@ function mapVoiceToKokoro(presetName) {
   }
 }
 
-// --- 100% Kokoro-Enforced Speech Output Pipeline ---
+// --- Staged 100% Kokoro Speech Output Pipeline ---
 export async function speakResponse(
   text, 
   onEndCallback = null, 
@@ -450,11 +449,13 @@ export async function speakResponse(
 ) {
   stopAudioPlayback();
   stopWakeWordListener();
-  isSpeakingState = true;
-  updateStatusUI("TATI SPEAKING", "speaking");
+  
+  // Set UI to SYNTHESIZING initially (not speaking yet!)
+  updateStatusUI("SYNTHESIZING VOICE...", "thinking");
 
   const handleSpeechCompletion = () => {
     isSpeakingState = false;
+    updateStatusUI("READY", "idle");
     if (onEndCallback) {
       onEndCallback();
     } else {
@@ -464,7 +465,7 @@ export async function speakResponse(
 
   const backendAvailable = await isLocalBackendAlive();
 
-  // 1. LOCAL MAC BACKEND MODE: Python FastAPI Kokoro-82M Engine
+  // 1. LOCAL MAC BACKEND MODE: Python FastAPI Kokoro Engine
   if (backendAvailable) {
     try {
       const kokoroVoice = mapVoiceToKokoro(preferredVoiceName);
@@ -502,14 +503,17 @@ export async function speakResponse(
         handleSpeechCompletion();
       };
 
+      // Switch UI to TATI SPEAKING only when audio starts playing
+      isSpeakingState = true;
+      updateStatusUI("TATI SPEAKING", "speaking");
       source.start(0);
       return;
     } catch (error) {
-      console.warn("⚠️ Local Kokoro backend unavailable. Falling back to cached In-Browser Kokoro ONNX...", error);
+      console.warn("⚠️ Local Kokoro backend unavailable. Falling back to In-Browser Kokoro ONNX...", error);
     }
   }
 
-  // 2. VERCEL ONLINE / LAPTOP-OFF MODE: In-Browser Kokoro-82M (q4 quantized)
+  // 2. VERCEL ONLINE / LAPTOP-OFF MODE: In-Browser Kokoro ONNX
   try {
     const tts = await prewarmInBrowserKokoro();
     const kokoroVoice = mapVoiceToKokoro(preferredVoiceName);
@@ -534,12 +538,16 @@ export async function speakResponse(
       handleSpeechCompletion();
     };
 
+    // Switch UI to TATI SPEAKING only when audio starts playing
+    isSpeakingState = true;
+    updateStatusUI("TATI SPEAKING", "speaking");
     source.start(0);
 
   } catch (browserKokoroErr) {
     console.error("❌ In-Browser Kokoro synthesis error:", browserKokoroErr);
-    updateStatusUI("KOKORO TTS ERROR", "error");
     isSpeakingState = false;
+    updateStatusUI("TTS ERROR", "error");
+    setTimeout(() => updateStatusUI("READY", "idle"), 3000);
   }
 }
 
@@ -661,7 +669,7 @@ export async function initiateWelcomeConsole() {
   }
 
   speakResponse(
-    "Welcome to Tati Voice AI Console. Kokoro neural speech engine ready. Say Hey Tati or tap the orb to begin."
+    "Welcome to Tati Voice AI Console. Say Hey Tati or tap the orb to begin."
   );
 }
 
@@ -684,7 +692,6 @@ if (typeof window !== "undefined") {
   });
 
   document.addEventListener('DOMContentLoaded', () => {
-    // Initiate background Kokoro ONNX model compilation on page load
     prewarmInBrowserKokoro().catch(() => {});
 
     const orb = document.getElementById('orb-button') || document.querySelector('.orb-container');
