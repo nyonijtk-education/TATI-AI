@@ -3,6 +3,7 @@ import json
 import os
 import re
 import socket
+import shutil
 import tempfile
 import traceback
 import urllib.request
@@ -12,6 +13,8 @@ import soundfile as sf
 import meilisearch
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv, find_dotenv
@@ -109,12 +112,20 @@ except Exception as e:
 
 app = FastAPI(title="Tati Voice AI Local RAG Backend (Kokoro Neural TTS, Offline Whisper & Groq Fallback)")
 
+# Middleware Configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+# Enable GZip compression for responses over 1KB
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+# Restrict allowed hosts for security
+app.add_middleware(
+    TrustedHostMiddleware, 
+    allowed_hosts=["127.0.0.1", "localhost", "testserver"]
 )
 
 meili_client = meilisearch.Client('http://127.0.0.1:7700')
@@ -404,6 +415,60 @@ def generate_local_neural_speech(req: TTSRequest):
     except Exception as e:
         print(f"❌ Kokoro Neural TTS Generation Error: {e}")
         raise HTTPException(status_code=500, detail=f"Kokoro synthesis failed: {str(e)}")
+
+@app.get("/api/voices")
+def get_available_voices():
+    """Returns a categorized list of popular Kokoro TTS voices supported by the pipeline."""
+    return {
+        "languages": {
+            "American English (a)": [
+                {"id": "af_heart", "name": "Heart (Default Female)", "gender": "female"},
+                {"id": "af_nicole", "name": "Nicole", "gender": "female"},
+                {"id": "af_sky", "name": "Sky", "gender": "female"},
+                {"id": "am_fenrir", "name": "Fenrir", "gender": "male"},
+                {"id": "am_michael", "name": "Michael", "gender": "male"}
+            ],
+            "British English (b)": [
+                {"id": "bf_emma", "name": "Emma", "gender": "female"},
+                {"id": "bm_george", "name": "George", "gender": "male"}
+            ]
+        }
+    }
+
+@app.get("/api/diagnostics")
+def system_diagnostics():
+    """Performs deep health checks across Meilisearch, Ollama, disk space, and models."""
+    meili_healthy = False
+    try:
+        meili_healthy = meili_client.health().get("status") == "available"
+    except Exception:
+        pass
+
+    ollama_healthy = False
+    try:
+        req = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=2.0) as res:
+            ollama_healthy = res.status == 200
+    except Exception:
+        pass
+
+    total, used, free = shutil.disk_usage("/")
+    
+    return {
+        "services": {
+            "meilisearch": "healthy" if meili_healthy else "unreachable",
+            "ollama": "healthy" if ollama_healthy else "unreachable",
+            "kokoro_tts": "loaded" if tts_pipeline is not None else "missing",
+            "whisper_stt": "loaded" if stt_model is not None else "missing",
+            "groq_cloud": "configured" if groq_client is not None else "missing"
+        },
+        "disk_storage": {
+            "total_gb": round(total / (2**30), 2),
+            "free_gb": round(free / (2**30), 2),
+            "percent_free": round((free / total) * 100, 1)
+        },
+        "internet_connectivity": is_online()
+    }
 
 @app.post("/api/chat/stream")
 def chat_stream_endpoint(req: ChatRequest):
