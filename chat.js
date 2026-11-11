@@ -1,6 +1,6 @@
 /**
  * Tati Voice AI Platform - chat.js (Complete Engine & Low-Latency Streaming)
- * 100% Syntax Verified + Full Export Compatibility for index.html
+ * 100% Mobile & Desktop Compatibility (Touchstart Audio Unlocking + VAD Whisper + Sentence TTS)
  */
 
 const getBaseUrl = () => {
@@ -25,6 +25,11 @@ export const SUPPORTED_LANGUAGES = {
 const SpeechRecognition = 
   typeof window !== "undefined" && 
   (window.SpeechRecognition || window.webkitSpeechRecognition);
+
+const isMobileDevice = () => {
+  return typeof navigator !== "undefined" && 
+    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+};
 
 // Global persistent state
 window._currentAudio = null;
@@ -149,7 +154,7 @@ export function prewarmAudio() {
         playPromise.then(() => {
           window._persistentAudio.pause();
           window._audioUnlocked = true;
-          console.log("🔊 AudioContext successfully unlocked.");
+          console.log("🔊 AudioContext successfully unlocked via touch/click gesture.");
         }).catch(() => {});
       }
     } catch (e) {}
@@ -159,7 +164,9 @@ export function prewarmAudio() {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (AudioCtx) {
       if (!window._audioCtx) window._audioCtx = new AudioCtx();
-      if (window._audioCtx.state === 'suspended') window._audioCtx.resume();
+      if (window._audioCtx.state === 'suspended') {
+        window._audioCtx.resume();
+      }
     }
   } catch (e) {}
 }
@@ -196,7 +203,13 @@ export function stopAudioPlayback() {
 // --- Voice Recognition Engine ---
 
 export function startWakeWordListener(onWakeCallback, targetWord = "tati", lang = "en-US") {
-  if (!SpeechRecognition || isSpeakingState || isRecordingState) return null;
+  if (isMobileDevice() || !SpeechRecognition || isSpeakingState || isRecordingState) {
+    if (isMobileDevice()) {
+      console.warn("📱 Mobile device detected. Auto wake-word disabled for browser stability.");
+      updateStatusUI("TAP ORB TO TALK", "idle");
+    }
+    return null;
+  }
 
   stopWakeWordListener();
 
@@ -235,10 +248,10 @@ export function startWakeWordListener(onWakeCallback, targetWord = "tati", lang 
     };
 
     recognition.onerror = (event) => {
-      if (event.error === "network") {
-        console.warn("⚠️ Cloud SpeechRecognition unavailable. Tap orb for local Whisper STT.");
+      if (event.error === "network" || event.error === "not-allowed" || event.error === "service-not-allowed") {
+        console.warn(`⚠️ SpeechRecognition unavailable (${event.error}). Tap orb for local Whisper STT.`);
         stopWakeWordListener();
-        updateStatusUI("OFFLINE - TAP ORB TO TALK", "idle");
+        updateStatusUI("TAP ORB TO TALK", "idle");
         return;
       }
       if (event.error !== "aborted" && activeWakeWordRecognition && !isSpeakingState) {
@@ -264,6 +277,7 @@ export function startWakeWordListener(onWakeCallback, targetWord = "tati", lang 
     return { stop: stopWakeWordListener };
   } catch (err) {
     console.warn("Could not start Voice-to-Wake engine:", err);
+    updateStatusUI("TAP ORB TO TALK", "idle");
     return null;
   }
 }
@@ -380,12 +394,12 @@ async function startLocalWhisperRecording(onResultCallback, onErrorCallback) {
         } else {
           console.warn("⚠️ Empty transcript returned from local Whisper STT.");
           if (onErrorCallback) onErrorCallback("No speech detected.");
-          updateStatusUI("SAY 'HEY TATI'", "idle");
+          updateStatusUI("TAP ORB TO TALK", "idle");
         }
       } catch (err) {
         console.error("Whisper STT error:", err);
         if (onErrorCallback) onErrorCallback("STT failed.");
-        updateStatusUI("SAY 'HEY TATI'", "idle");
+        updateStatusUI("TAP ORB TO TALK", "idle");
       }
     };
 
@@ -413,7 +427,7 @@ export function listenToVoice(onResultCallback, onErrorCallback, lang = "en-US")
     return { start: () => {}, stop: localStop };
   }
 
-  if (!navigator.onLine || !SpeechRecognition) {
+  if (isMobileDevice() || !navigator.onLine || !SpeechRecognition) {
     startLocalWhisperRecording(onResultCallback, onErrorCallback);
     return { start: () => {}, stop: localStop };
   }
@@ -544,7 +558,7 @@ function fallbackWebSpeech(text, onEndCallback, lang = "en-US", rate = 1.0) {
   utterance.onend = finish;
   utterance.onerror = finish;
 
-  // Fallback safety timeout for Chrome SpeechSynthesis freeze issues
+  // Safety net timeout for Chrome/Safari SpeechSynthesis freeze bugs
   setTimeout(finish, 15000);
 
   window._currentUtterance = utterance;
@@ -584,7 +598,7 @@ export async function speakResponse(
     return;
   }
 
-  // Chunk long text into individual sentences to prevent /api/tts 504 timeouts
+  // Split text into individual sentences to avoid Kokoro TTS 504 timeouts
   const sentences = text.match(/[^.!?]+[.!?]+|\s*[^.!?]+$/g) || [text];
 
   try {
@@ -727,29 +741,41 @@ window.sendVoiceQuery = sendVoiceQuery;
 window.initiateWelcomeConsole = initiateWelcomeConsole;
 window.hideWelcomeModal = hideWelcomeModal;
 
+// --- Mobile-Optimized Touchstart & Pointer Event Binding ---
+
 function bindUIListeners() {
-  const startBtn = document.getElementById('start-btn') || 
-                   document.querySelector('button') || 
-                   document.getElementById('orb-button');
-
-  if (startBtn) {
-    startBtn.addEventListener('click', () => {
-      hideWelcomeModal();
-      prewarmAudio();
-
-      if (isRecordingState) {
-        stopLocalWhisperRecording();
-      } else {
-        listenToVoice((transcript) => {
-          sendVoiceQuery(transcript);
-        });
-      }
-    });
-  }
-
   const orb = document.getElementById('orb-button') || document.querySelector('.orb-container');
-  if (orb && orb !== startBtn) {
-    orb.addEventListener('click', () => {
+  const startBtn = document.getElementById('start-btn') || document.querySelector('button');
+
+  if (!orb && !startBtn) return;
+
+  const targetElements = [orb, startBtn].filter(Boolean);
+  let touchHandled = false;
+
+  targetElements.forEach((el) => {
+    // 1. Mobile touchstart: Zero latency activation + AudioContext unlock
+    el.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      touchHandled = true;
+
+      hideWelcomeModal();
+      prewarmAudio();
+
+      if (isRecordingState) {
+        stopLocalWhisperRecording();
+      } else {
+        listenToVoice((transcript) => {
+          sendVoiceQuery(transcript);
+        });
+      }
+
+      setTimeout(() => { touchHandled = false; }, 500);
+    }, { passive: false });
+
+    // 2. Desktop click fallback (skipped if touchstart already handled it)
+    el.addEventListener('click', (e) => {
+      if (touchHandled) return;
+
       hideWelcomeModal();
       prewarmAudio();
 
@@ -761,7 +787,7 @@ function bindUIListeners() {
         });
       }
     });
-  }
+  });
 }
 
 if (typeof window !== "undefined") {
